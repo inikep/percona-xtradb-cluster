@@ -1381,7 +1381,7 @@ mysql_mutex_t LOCK_wsrep_desync;
 
 
 int wsrep_replaying = 0;
-ulong wsrep_running_threads = 0;  // # of currently running wsrep threads
+std::atomic<ulong> wsrep_running_threads{0};  // # of currently running wsrep threads
 static void wsrep_close_threads(THD *thd);
 bool mysqld_server_initialized = 0;
 #endif /* WITH_WSREP */
