@@ -1794,6 +1794,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
   double start_busy_usecs = 0.0;
   double start_cpu_nsecs = 0.0;
 #endif /* WITH_WSREP */
+
   if (unlikely(opt_userstat))
     userstat_start_timer(&start_busy_usecs, &start_cpu_nsecs);
 
