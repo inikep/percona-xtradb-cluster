@@ -702,6 +702,7 @@ THD::THD(bool enable_plugins)
   wsrep_ws_handle.opaque = NULL;
   wsrep_retry_counter = 0;
   wsrep_PA_safe = true;
+  wsrep_safe_to_abort = true;
   wsrep_retry_query = NULL;
   wsrep_retry_query_len = 0;
   wsrep_retry_command = COM_CONNECT;
@@ -1035,6 +1036,7 @@ void THD::init(void) {
   wsrep_retry_counter = 0;
   wsrep_rli = NULL;
   wsrep_PA_safe = true;
+  wsrep_safe_to_abort = true;
   wsrep_consistency_check = NO_CONSISTENCY_CHECK;
   wsrep_mysql_replicated = 0;
   wsrep_TOI_pre_query     = NULL;
