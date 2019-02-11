@@ -229,6 +229,13 @@ static const ulint OS_AIO_MERGE_N_CONSECUTIVE = 64;
 /** Flag indicating if the page_cleaner is in active state. */
 extern bool buf_page_cleaner_is_active;
 
+#ifdef WITH_WSREP
+#define WAIT_ALLOW_WRITES()                                            \
+  do {                                                                 \
+    if (srv_allow_writes_event) os_event_wait(srv_allow_writes_event); \
+  } while (0)
+#endif /* WITH_WSREP */
+
 #ifndef UNIV_HOTBACKUP
 /**********************************************************************
 
@@ -1658,6 +1665,9 @@ parameter (--tmpdir).
 @return temporary file handle, or NULL on error */
 FILE *os_file_create_tmpfile(const char *path) {
   FILE *file = NULL;
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
   int fd = innobase_mysql_tmpfile(path);
 
   if (fd >= 0) {
@@ -3255,6 +3265,9 @@ Flushes the write buffers of a given file to the disk.
 @return true if success */
 bool os_file_flush_func(os_file_t file) {
   int ret;
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
 
   ret = os_file_fsync_posix(file);
 
@@ -3297,6 +3310,11 @@ os_file_t os_file_create_simple_func(const char *name, ulint create_mode,
   os_file_t file;
 
   *success = false;
+
+#ifdef WITH_WSREP
+  if (create_mode != OS_FILE_OPEN && create_mode != OS_FILE_OPEN_RAW)
+    WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
 
   int create_flag;
 
@@ -3408,6 +3426,9 @@ but reports the error and returns false.
                                 an error.
 @return true if call succeeds, false on error */
 bool os_file_create_directory(const char *pathname, bool fail_if_exists) {
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
   int rcode = mkdir(pathname, 0770);
 
   if (!(rcode == 0 || (errno == EEXIST && !fail_if_exists))) {
@@ -3483,6 +3504,11 @@ pfs_os_file_t os_file_create_func(const char *name, ulint create_mode,
   bool on_error_no_exit;
   bool on_error_silent;
   pfs_os_file_t file;
+
+#ifdef WITH_WSREP
+  if (create_mode != OS_FILE_OPEN && create_mode != OS_FILE_OPEN_RAW)
+    WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
 
   *success = false;
 
@@ -3642,6 +3668,11 @@ pfs_os_file_t os_file_create_simple_no_error_handling_func(const char *name,
   pfs_os_file_t file;
   int create_flag;
 
+#ifdef WITH_WSREP
+  if (create_mode != OS_FILE_OPEN && create_mode != OS_FILE_OPEN_RAW)
+    WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
+
   ut_a(!(create_mode & OS_FILE_ON_ERROR_SILENT));
   ut_a(!(create_mode & OS_FILE_ON_ERROR_NO_EXIT));
 
@@ -3695,6 +3726,10 @@ pfs_os_file_t os_file_create_simple_no_error_handling_func(const char *name,
 @param[out]	exist		indicate if file pre-exist
 @return true if success */
 bool os_file_delete_if_exists_func(const char *name, bool *exist) {
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
+
   if (!os_file_can_delete(name)) {
     return (false);
   }
@@ -3723,6 +3758,10 @@ bool os_file_delete_if_exists_func(const char *name, bool *exist) {
 @param[in]	name		file path as a null-terminated string
 @return true if success */
 bool os_file_delete_func(const char *name) {
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
+
   int ret = unlink(name);
 
   if (ret != 0) {
@@ -3754,6 +3793,10 @@ bool os_file_rename_func(const char *oldpath, const char *newpath) {
   ut_ad(os_file_status(oldpath, &exists, &type));
   ut_ad(exists);
 #endif /* UNIV_DEBUG */
+
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
 
   int ret = rename(oldpath, newpath);
 
@@ -3924,6 +3967,10 @@ size of the file.
 @return true if success */
 static bool os_file_truncate_posix(const char *pathname, pfs_os_file_t file,
                                    os_offset_t size) {
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
+
   int res = ftruncate(file.m_file, size);
   if (res == -1) {
     bool retry;
@@ -3942,6 +3989,10 @@ static bool os_file_truncate_posix(const char *pathname, pfs_os_file_t file,
 @return true if success */
 bool os_file_set_eof(FILE *file) /*!< in: file to be truncated */
 {
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
+
   return (!ftruncate(fileno(file), ftell(file)));
 }
 
@@ -4177,6 +4228,10 @@ Flushes the write buffers of a given file to the disk.
 @param[in]	file		handle to a file
 @return true if success */
 bool os_file_flush_func(os_file_t file) {
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
+
   ++os_n_fsyncs;
 
   BOOL ret = FlushFileBuffers(file);
@@ -5410,6 +5465,9 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
 
   ut_ad(type.validate());
   ut_ad(n > 0);
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
 
   ssize_t n_bytes = os_file_pwrite(type, file, buf, n, offset, &err);
 
@@ -6126,6 +6184,10 @@ Requests a synchronous write operation.
 @return DB_SUCCESS if request was successful, false if fail */
 dberr_t os_file_write_func(IORequest &type, const char *name, os_file_t file,
                            const void *buf, os_offset_t offset, ulint n) {
+#ifdef WITH_WSREP
+  WAIT_ALLOW_WRITES();
+#endif /* WITH_WSREP */
+
   ut_ad(type.validate());
   ut_ad(type.is_write());
 
