@@ -58,7 +58,7 @@ while ($mysql_errno)
   {
     --die Server failed to restart
   }
-  --sleep 0.1
+  --sleep 0.2
 }
   --dec $successes
   --sleep 0.1
