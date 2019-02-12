@@ -388,6 +388,8 @@ int wsrep_write_cache(wsrep_t *const wsrep, THD *const thd,
 }
 
 void wsrep_dump_rbr_buf(THD *thd, const void *rbr_buf, size_t buf_len) {
+  /* filename is derived from wsrep_data_home_dir (which in turn from
+  mysql_real_data_home that has max length limit of FN_REFLEN */
   char filename[FN_REFLEN + 64] = {0};
   int len = snprintf(filename, FN_REFLEN + 64, "%s/GRA_%u_%lld.log",
                      wsrep_data_home_dir, thd->thread_id(),
