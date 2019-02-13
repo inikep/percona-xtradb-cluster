@@ -10255,6 +10255,13 @@ bool mysqld_get_one_option(int optid,
             CONFIGURED_BY_STARTUP_OPTIONS);
       } else {
         parse_filter_arg(&channel_name, &filter_val, argument);
+#ifdef WITH_WSREP
+        if (wsrep_is_wsrep_channel_name(channel_name)) {
+          sql_print_error("Configuration of the '%s' channel by replicate-ignore-db is not allowed.",
+            WSREP_CHANNEL_NAME);
+          return 1;
+        }
+#endif /* WITH_WSREP */
         rpl_filter = rpl_channel_filters.get_channel_filter(channel_name);
         rpl_filter->add_ignore_db(filter_val);
         rpl_filter->ignore_db_statistics.set_all(
@@ -10269,6 +10276,13 @@ bool mysqld_get_one_option(int optid,
             CONFIGURED_BY_STARTUP_OPTIONS);
       } else {
         parse_filter_arg(&channel_name, &filter_val, argument);
+#ifdef WITH_WSREP
+        if (wsrep_is_wsrep_channel_name(channel_name)) {
+          sql_print_error("Configuration of the '%s' channel by replicate-do-db is not allowed.",
+            WSREP_CHANNEL_NAME);
+          return 1;
+        }
+#endif /* WITH_WSREP */
         rpl_filter = rpl_channel_filters.get_channel_filter(channel_name);
         rpl_filter->add_do_db(filter_val);
         rpl_filter->do_db_statistics.set_all(
@@ -10285,6 +10299,13 @@ bool mysqld_get_one_option(int optid,
             CONFIGURED_BY_STARTUP_OPTIONS);
       } else {
         parse_filter_arg(&channel_name, &filter_val, argument);
+#ifdef WITH_WSREP
+        if (wsrep_is_wsrep_channel_name(channel_name)) {
+          sql_print_error("Configuration of the '%s' channel by replicate-rewrite-db is not allowed.",
+            WSREP_CHANNEL_NAME);
+          return 1;
+        }
+#endif /* WITH_WSREP */
         rpl_filter = rpl_channel_filters.get_channel_filter(channel_name);
         if (parse_replicate_rewrite_db(&key, &val, filter_val)) return 1;
         rpl_filter->add_db_rewrite(key, val);
@@ -10312,6 +10333,13 @@ bool mysqld_get_one_option(int optid,
             CONFIGURED_BY_STARTUP_OPTIONS);
       } else {
         parse_filter_arg(&channel_name, &filter_val, argument);
+#ifdef WITH_WSREP
+        if (wsrep_is_wsrep_channel_name(channel_name)) {
+          sql_print_error("Configuration of the '%s' channel by replicate-do-table is not allowed.",
+            WSREP_CHANNEL_NAME);
+          return 1;
+        }
+#endif /* WITH_WSREP */
         rpl_filter = rpl_channel_filters.get_channel_filter(channel_name);
         if (rpl_filter->add_do_table_array(filter_val)) {
           LogErr(ERROR_LEVEL, ER_RPL_CANT_ADD_DO_TABLE, argument);
@@ -10332,6 +10360,13 @@ bool mysqld_get_one_option(int optid,
             CONFIGURED_BY_STARTUP_OPTIONS);
       } else {
         parse_filter_arg(&channel_name, &filter_val, argument);
+#ifdef WITH_WSREP
+        if (wsrep_is_wsrep_channel_name(channel_name)) {
+          sql_print_error("Configuration of the '%s' channel by replicate-wild-do-table is not allowed.",
+            WSREP_CHANNEL_NAME);
+          return 1;
+        }
+#endif /* WITH_WSREP */
         rpl_filter = rpl_channel_filters.get_channel_filter(channel_name);
         if (rpl_filter->add_wild_do_table(filter_val)) {
           LogErr(ERROR_LEVEL, ER_RPL_FILTER_ADD_WILD_DO_TABLE_FAILED, argument);
@@ -10353,6 +10388,13 @@ bool mysqld_get_one_option(int optid,
             CONFIGURED_BY_STARTUP_OPTIONS);
       } else {
         parse_filter_arg(&channel_name, &filter_val, argument);
+#ifdef WITH_WSREP
+        if (wsrep_is_wsrep_channel_name(channel_name)) {
+          sql_print_error("Configuration of the '%s' channel by replicate-wild-ignore-table is not allowed.",
+            WSREP_CHANNEL_NAME);
+          return 1;
+        }
+#endif /* WITH_WSREP */
         rpl_filter = rpl_channel_filters.get_channel_filter(channel_name);
         if (rpl_filter->add_wild_ignore_table(filter_val)) {
           LogErr(ERROR_LEVEL, ER_RPL_FILTER_ADD_WILD_IGNORE_TABLE_FAILED,
@@ -10374,6 +10416,13 @@ bool mysqld_get_one_option(int optid,
             CONFIGURED_BY_STARTUP_OPTIONS);
       } else {
         parse_filter_arg(&channel_name, &filter_val, argument);
+#ifdef WITH_WSREP
+        if (wsrep_is_wsrep_channel_name(channel_name)) {
+          sql_print_error("Configuration of the '%s' channel by replicate-ignore-table is not allowed.",
+            WSREP_CHANNEL_NAME);
+          return 1;
+        }
+#endif /* WITH_WSREP */
         rpl_filter = rpl_channel_filters.get_channel_filter(channel_name);
         if (rpl_filter->add_ignore_table_array(filter_val)) {
           LogErr(ERROR_LEVEL, ER_RPL_CANT_ADD_IGNORE_TABLE, argument);
