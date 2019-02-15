@@ -586,6 +586,7 @@ THD::THD(bool enable_plugins)
       wsrep_applier(is_applier),
       wsrep_applier_closing(false),
       wsrep_client_thread(0),
+      wsrep_non_replicating_atomic_ddl(false),
       wsrep_po_handle(WSREP_PO_INITIALIZER),
       wsrep_po_cnt(0),
       wsrep_po_in_trans(false),
@@ -1032,6 +1033,7 @@ void THD::init(void) {
   wsrep_conflict_state = NO_CONFLICT;
   wsrep_query_state = WSREP_QUERY_IDLE;
   wsrep_last_query_id = 0;
+  wsrep_non_replicating_atomic_ddl = false;
   wsrep_trx_meta.gtid = WSREP_GTID_UNDEFINED;
   wsrep_trx_meta.depends_on = WSREP_SEQNO_UNDEFINED;
   wsrep_retry_counter = 0;
