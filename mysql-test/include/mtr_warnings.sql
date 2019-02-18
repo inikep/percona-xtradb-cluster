@@ -322,6 +322,8 @@ INSERT INTO global_suppressions VALUES
  ("WSREP: Table without explict primary key \\(not-recommended\\) and certification of nonPK table is OFF too"),
  ("WSREP: Node is not a cluster node. Disabling pxc_strict_mode"),
  ("WSREP: pxc_strict_mode can be changed only if node is cluster-node"),
+ ("WSREP: Toggling wsrep_on to OFF will affect sql_log_bin"),
+ ("WSREP: Toggling wsrep_on to ON will affect sql_log_bin"),
 
  /* MySQL supression needed by Galera */
  ("Slave I/O.*: Get master clock failed with error:.*"),
