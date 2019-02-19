@@ -15,7 +15,7 @@ percona_server_version="@@PERCONA_VERSION@@"
 revision="@@REVISION@@"
 compilation_comment_debug="Percona XtraDB Cluster - Debug (GPL), Release rel$(percona_server_version), Revision $(revision), WSREP version $(wsrep_version)"
 compilation_comment_release="Percona XtraDB Cluster (GPL), Release rel$(percona_server_version), Revision $(revision), WSREP version $(wsrep_version)"
-server_suffix="-80"
+server_suffix=""
 prefix=/usr
 
 TMP=$(CURDIR)/debian/tmp/
@@ -62,6 +62,7 @@ ifeq ($(SKIP_DEBUG_BINARY),)
 		-DINSTALL_MYSQLSHAREDIR=share/mysql \
 		-DINSTALL_MYSQLTESTDIR=lib/mysql-test \
 		-DINSTALL_PLUGINDIR=lib/mysql/plugin/debug \
+		-DROUTER_INSTALL_PLUGINDIR=lib/mysqlrouter/plugin \
 		-DINSTALL_SBINDIR=sbin \
 		-DINSTALL_SCRIPTDIR=bin \
 		-DINSTALL_SUPPORTFILESDIR=share/mysql \
@@ -108,6 +109,7 @@ endif
 		-DINSTALL_MYSQLSHAREDIR=share/mysql \
 		-DINSTALL_MYSQLTESTDIR=lib/mysql-test \
 		-DINSTALL_PLUGINDIR=lib/mysql/plugin \
+		-DROUTER_INSTALL_PLUGINDIR=lib/mysqlrouter/plugin \
 		-DINSTALL_SBINDIR=sbin \
 		-DINSTALL_SCRIPTDIR=bin \
 		-DINSTALL_SUPPORTFILESDIR=share/mysql \
