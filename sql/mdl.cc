@@ -70,7 +70,6 @@ extern bool wsrep_grant_mdl_exception(const MDL_context *requestor_ctx,
 #endif /* WITH_WSREP */
 
 #ifdef HAVE_PSI_INTERFACE
-
 static PSI_mutex_key key_MDL_wait_LOCK_wait_status;
 
 #ifdef WITH_WSREP
@@ -1694,6 +1693,7 @@ bool MDL_lock::needs_hton_notification(
   @todo This naive implementation should be replaced with one that saves
         on memory allocation by reusing released objects.
 */
+
 #ifdef WITH_WSREP
 MDL_ticket *MDL_ticket::create(MDL_context *ctx_arg, enum_mdl_type type_arg,
                                bool wsrep_non_preemptable
@@ -4755,6 +4755,13 @@ void MDL_context::set_lock_duration(MDL_ticket *mdl_ticket,
   DBUG_ASSERT(mdl_ticket->m_duration == MDL_TRANSACTION &&
               duration != MDL_TRANSACTION);
   m_ticket_store.remove(MDL_TRANSACTION, mdl_ticket);
+#ifdef WITH_WSREP
+  /* This will take care of HANDLER <table> OPEN <handler-name> lock
+  construct and other such construct that exercise use of explicit lock. */
+  if (duration == MDL_EXPLICIT) {
+    mdl_ticket->set_wsrep_non_preemptable_status(true);
+  }
+#endif /* WITH_WSREP */
   m_ticket_store.push_front(duration, mdl_ticket);
 
 #ifndef DBUG_OFF
