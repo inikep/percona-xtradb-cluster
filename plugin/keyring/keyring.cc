@@ -144,16 +144,7 @@ static int keyring_init(MYSQL_PLUGIN plugin_info MY_ATTRIBUTE((unused))) {
     if (keys->init(keyring_io, keyring_file_data_value)) {
       is_keys_container_initialized = false;
       logger->log(ERROR_LEVEL, ER_KEYRING_FILE_INIT_FAILED);
-#ifdef WITH_WSREP
-      /* If running in cluster mode, keyring initialization failure is treated
-      as fatal error to avoid inconsistency in cluster enviornment where-in
-      some node of the cluster are running with keyring enabled and other
-      in keyring disabled mode, despite of same user provided configuration. */
-      // return (wsrep_is_wsrep_on() ? true : false);
       return true;
-#else
-      return true;
-#endif /* WITH_WSREP */
     }
     is_keys_container_initialized = true;
     return false;
