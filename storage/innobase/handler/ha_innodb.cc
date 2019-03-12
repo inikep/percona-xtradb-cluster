@@ -1909,7 +1909,9 @@ allowed, else the thread is put into sleep.
 @param[in,out]	prebuilt	row prebuilt handler */
 static inline void innobase_srv_conc_enter_innodb(row_prebuilt_t *prebuilt) {
 #ifdef WITH_WSREP
-  // TODO: add reasoning
+  // innodb_thread_concurreny limit how many thread can work in innodb
+  // at any given time. This limit is not applicable to wsrep-applier
+  // threads given they are high priority threads.
   if (wsrep_on(prebuilt->trx->mysql_thd) &&
       wsrep_thd_is_BF(prebuilt->trx->mysql_thd, false))
     return;
@@ -1950,7 +1952,9 @@ any spare tickets.
 @param[in,out]	prebuilt	row prebuilt handler */
 static inline void innobase_srv_conc_exit_innodb(row_prebuilt_t *prebuilt) {
 #ifdef WITH_WSREP
-  // TODO: add reasoning
+  // innodb_thread_concurreny limit how many thread can work in innodb
+  // at any given time. This limit is not applicable to wsrep-applier
+  // threads given they are high priority threads.
   if (wsrep_on(prebuilt->trx->mysql_thd) &&
       wsrep_thd_is_BF(prebuilt->trx->mysql_thd, false))
     return;
