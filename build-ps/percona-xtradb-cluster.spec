@@ -219,7 +219,7 @@ Prefix: %{_sysconfdir}
               %define distro_buildreq       gcc-c++ gperf ncurses-devel perl readline-devel time zlib-devel libaio-devel bison cmake
               %define distro_requires       chkconfig coreutils grep procps shadow-utils %distro_req
             %endif
-          %endif
+          %endif    
         %endif
       %endif
     %else
@@ -304,8 +304,7 @@ Requires:             percona-xtradb-cluster-server = %{version}-%{release}
 Requires:             percona-xtradb-cluster-client = %{version}-%{release}
 Provides:       mysql-server galera-57 galera-57-debuginfo
 BuildRequires:  %{distro_buildreq} pam-devel openssl-devel numactl-devel
-BuildRequires:  check-devel glibc-devel %{gcc_req} openssl-devel %{boost_req} check-devel openldap-devel
-
+BuildRequires:  scons check-devel glibc-devel %{gcc_req} openssl-devel %{boost_req} check-devel openldap-devel
 %if 0%{?systemd}
 BuildRequires:  systemd
 %endif
