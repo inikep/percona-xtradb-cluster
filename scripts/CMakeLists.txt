@@ -462,7 +462,7 @@ IF(WIN32)
 
 ELSE()
   IF(WITH_WSREP)
-    SET(WSREP_BINARIES wsrep_sst_common wsrep_sst_rsync wsrep_sst_xtrabackup-v2 clustercheck pyclustercheck)
+    SET(WSREP_BINARIES wsrep_sst_common wsrep_sst_rsync wsrep_sst_xtrabackup-v2 wsrep_sst_upgrade clustercheck pyclustercheck)
   ENDIF()
 
   # Configure this one, for testing, but do not install it.
@@ -496,6 +496,7 @@ ELSE()
       wsrep_sst_common
       wsrep_sst_rsync
       wsrep_sst_xtrabackup-v2
+      wsrep_sst_upgrade
     )
   ENDIF()
 
