@@ -111,3 +111,38 @@ sys
 test
 wsrep_replicated_after_diff
 1
+#node-1 (create tmp user)
+call mtr.add_suppression("WSREP: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function");
+CREATE USER CURRENT_USER();
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+DROP USER CURRENT_USER();
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+ALTER USER CURRENT_USER() PASSWORD EXPIRE;
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+ALTER USER CURRENT_USER() IDENTIFIED BY 'abc';
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+ALTER USER USER() IDENTIFIED BY 'abc';
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+RENAME USER CURRENT_USER() to 'root2'@'localhost';
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+RENAME USER 'root2'@'localhost' to CURRENT_USER();
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+GRANT ALL PRIVILEGES ON *.* TO CURRENT_USER();
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+GRANT DROP ON *.* TO CURRENT_USER();
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+REVOKE CREATE ON *.* FROM CURRENT_USER();
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+REVOKE ALL ON *.* FROM CURRENT_USER();
+ERROR HY000: Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function for USER operation while operating in cluster mode
+#node-2
+call mtr.add_suppression("Percona XtraDB Cluster doesn't allow use of CURRENT_USER/USER function");
+# node-1
+CREATE USER 'mysqladmin_test' IDENTIFIED BY '1234';
+# mysqladmin password change (should fail)
+# mysqladmin password change with --use-set-password (should succeed)
+# Login with new password successful
+SELECT 1;
+1
+1
+DROP USER 'mysqladmin_test';

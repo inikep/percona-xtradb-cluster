@@ -106,6 +106,12 @@
   @param comma   If true, append a ',' before the the user.
  */
 void log_user(THD *thd, String *str, LEX_USER *user, bool comma = true) {
+
+#ifdef WITH_WSREP
+  /* PXC doesn't allow user function (CURRENT_USER) with user operation */
+  if (WSREP(thd) && !user) return;
+#endif /* WITH_WSREP */
+
   String from_user(user->user.str, user->user.length, system_charset_info);
   String from_plugin(user->plugin.str, user->plugin.length,
                      system_charset_info);
