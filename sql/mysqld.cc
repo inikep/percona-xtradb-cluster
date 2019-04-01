@@ -10634,7 +10634,7 @@ bool mysqld_get_one_option(int optid,
         parse_filter_arg(&channel_name, &filter_val, argument);
 #ifdef WITH_WSREP
         if (wsrep_is_wsrep_channel_name(channel_name)) {
-          sql_print_error("Configuration of the '%s' channel by replicate-ignore-db is not allowed.",
+          WSREP_ERROR("Configuration of the '%s' channel by replicate-ignore-db is not allowed.",
             WSREP_CHANNEL_NAME);
           return 1;
         }
@@ -10655,7 +10655,7 @@ bool mysqld_get_one_option(int optid,
         parse_filter_arg(&channel_name, &filter_val, argument);
 #ifdef WITH_WSREP
         if (wsrep_is_wsrep_channel_name(channel_name)) {
-          sql_print_error("Configuration of the '%s' channel by replicate-do-db is not allowed.",
+          WSREP_ERROR("Configuration of the '%s' channel by replicate-do-db is not allowed.",
             WSREP_CHANNEL_NAME);
           return 1;
         }
@@ -10678,7 +10678,7 @@ bool mysqld_get_one_option(int optid,
         parse_filter_arg(&channel_name, &filter_val, argument);
 #ifdef WITH_WSREP
         if (wsrep_is_wsrep_channel_name(channel_name)) {
-          sql_print_error("Configuration of the '%s' channel by replicate-rewrite-db is not allowed.",
+          WSREP_ERROR("Configuration of the '%s' channel by replicate-rewrite-db is not allowed.",
             WSREP_CHANNEL_NAME);
           return 1;
         }
@@ -10712,7 +10712,7 @@ bool mysqld_get_one_option(int optid,
         parse_filter_arg(&channel_name, &filter_val, argument);
 #ifdef WITH_WSREP
         if (wsrep_is_wsrep_channel_name(channel_name)) {
-          sql_print_error("Configuration of the '%s' channel by replicate-do-table is not allowed.",
+          WSREP_ERROR("Configuration of the '%s' channel by replicate-do-table is not allowed.",
             WSREP_CHANNEL_NAME);
           return 1;
         }
@@ -10767,7 +10767,7 @@ bool mysqld_get_one_option(int optid,
         parse_filter_arg(&channel_name, &filter_val, argument);
 #ifdef WITH_WSREP
         if (wsrep_is_wsrep_channel_name(channel_name)) {
-          sql_print_error("Configuration of the '%s' channel by replicate-wild-ignore-table is not allowed.",
+          WSREP_ERROR("Configuration of the '%s' channel by replicate-wild-ignore-table is not allowed.",
             WSREP_CHANNEL_NAME);
           return 1;
         }
@@ -10795,7 +10795,7 @@ bool mysqld_get_one_option(int optid,
         parse_filter_arg(&channel_name, &filter_val, argument);
 #ifdef WITH_WSREP
         if (wsrep_is_wsrep_channel_name(channel_name)) {
-          sql_print_error("Configuration of the '%s' channel by replicate-ignore-table is not allowed.",
+          WSREP_ERROR("Configuration of the '%s' channel by replicate-ignore-table is not allowed.",
             WSREP_CHANNEL_NAME);
           return 1;
         }
@@ -12192,6 +12192,8 @@ PSI_thread_key key_thread_handle_con_admin_sockets;
 PSI_thread_key key_THREAD_wsrep_sst_joiner;
 PSI_thread_key key_THREAD_wsrep_sst_donor;
 PSI_thread_key key_THREAD_wsrep_sst_upgrade;
+PSI_thread_key key_THREAD_wsrep_sst_logger;
+
 PSI_thread_key key_THREAD_wsrep_applier;
 PSI_thread_key key_THREAD_wsrep_rollbacker;
 #endif /* WITH_WSREP */
@@ -12217,6 +12219,7 @@ static PSI_thread_info all_server_threads[]=
   { &key_THREAD_wsrep_sst_joiner, "THREAD_wsrep_sst_joiner", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_THREAD_wsrep_sst_donor, "THREAD_wsrep_sst_donor", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_THREAD_wsrep_sst_upgrade, "THREAD_wsrep_sst_upgrade", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+  { &key_THREAD_wsrep_sst_logger, "THREAD_wsrep_sst_logger", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_THREAD_wsrep_applier, "THREAD_wsrep_applier", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
   { &key_THREAD_wsrep_rollbacker, "THREAD_wsrep_rollbacker", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME}
 #endif /* WITH_WSREP */
