@@ -854,6 +854,11 @@ bool Sql_cmd_alter_tablespace::execute(THD *thd) {
     return true;
   }
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
+
   if (lock_tablespace_names(thd, m_tablespace_name)) {
     return true;
   }
@@ -1329,6 +1334,12 @@ bool Sql_cmd_create_undo_tablespace::execute(THD *thd) {
     return true;
   }
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
+
+
   handlerton *hton = nullptr;
   if (get_stmt_hton(thd, m_options->engine_name, m_undo_tablespace_name.str,
                     "CREATE UNDO TABLESPACE", &hton)) {
@@ -1476,6 +1487,11 @@ bool Sql_cmd_alter_undo_tablespace::execute(THD *thd) {
     return true;
   }
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
+
   handlerton *hton = nullptr;
   if (get_stmt_hton(thd, m_options->engine_name, m_undo_tablespace_name.str,
                     "ALTER UNDO TABLESPACE", &hton)) {
@@ -1566,6 +1582,11 @@ bool Sql_cmd_drop_undo_tablespace::execute(THD *thd) {
   if (check_global_access(thd, CREATE_TABLESPACE_ACL)) {
     return true;
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
 
   handlerton *hton = nullptr;
   if (get_stmt_hton(thd, m_options->engine_name, m_undo_tablespace_name.str,
