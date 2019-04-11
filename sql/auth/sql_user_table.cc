@@ -655,6 +655,15 @@ bool log_and_commit_acl_ddl(THD *thd, bool transactional_tables,
   /* Write to binlog and textlogs only if there is no error */
   if (!result) {
     mysql_rewrite_acl_query(thd, Consumer_type::BINLOG, rewrite_params);
+#ifdef WITH_WSREP
+    /* If operating in cluster mode + binlog is enabled + sql_log_bin = 0
+    dis-allow write_to_binlog routine to execute. */
+    write_to_binlog =
+        (WSREP(thd) && (mysql_bin_log.is_open() &&
+                        !(thd->variables.option_bits & OPTION_BIN_LOG)))
+            ? false
+            : write_to_binlog;
+#endif /* WITH_WSREP */
     if (write_to_binlog) {
       LEX_CSTRING query;
       enum_sql_command command;
