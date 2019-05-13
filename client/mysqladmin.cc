@@ -77,6 +77,11 @@ static bool using_opt_enable_cleartext_plugin = 0;
 static bool opt_show_warnings = 0;
 static uint opt_zstd_compress_level = default_zstd_compression_level;
 static char *opt_compress_algorithm = nullptr;
+
+#ifdef WITH_WSREP
+static bool opt_use_set_password = 0;
+#endif /* WITH_WSREP */
+
 #if defined(_WIN32)
 static char *shared_memory_base_name = 0;
 #endif
@@ -301,6 +306,12 @@ static struct my_option my_long_options[] = {
      &opt_zstd_compress_level, &opt_zstd_compress_level, 0, GET_UINT,
      REQUIRED_ARG, 3, 1, 22, 0, 0, 0},
 
+#ifdef WITH_WSREP
+    {"use_set_password", OPT_USE_SET_PASSWORD,
+     "Use 'SET PASSWORD' instead of 'ALTER USER' to change passwords",
+     &opt_use_set_password, &opt_use_set_password,
+     0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+#endif /* WITH_WSREP */
 
     {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}};
 
@@ -974,7 +985,12 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
         break;
       }
       case ADMIN_PASSWORD: {
+#ifdef WITH_WSREP
+        const int buff_len=128;
+        char buff[buff_len];
+#else
         char buff[128];
+#endif /* WITH_WSREP */
         time_t start_time;
         char *typed_password = NULL, *verified = NULL, *tmp = NULL;
         bool log_off = true, err = false;
@@ -983,6 +999,14 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
         /* Do initialization the same way as we do in mysqld */
         start_time = time((time_t *)0);
         randominit(&rand_st, (ulong)start_time, (ulong)start_time / 2);
+
+#ifdef WITH_WSREP
+        if (opt_use_set_password && mysql_get_server_version(mysql) < 50700)
+        {
+          my_printf_error(0, "password command not allowed on servers with an older version (less than 5.7)", error_flags);
+          return 1;
+        }
+#endif /* WITH_WSREP */
 
         if (argc < 1) {
           my_printf_error(0, "Too few arguments to change password",
@@ -1050,7 +1074,21 @@ static int execute_commands(MYSQL *mysql, int argc, char **argv) {
         }
 #endif
         memset(buff, 0, sizeof(buff));
+
+#ifdef WITH_WSREP
+        /*
+          PXC-2537: Use SET PASSWORD rather than ALTER USER USER()
+          to avoid using USER() in a replicated statement (causes
+          problems on the replica since the applier thread will use
+          a different user than the client).
+        */
+        if (opt_use_set_password)
+          snprintf(buff, buff_len, "SET PASSWORD = '%s'", typed_password);
+        else
+          snprintf(buff, buff_len, "ALTER USER USER() IDENTIFIED BY '%s'", typed_password);
+#else
         sprintf(buff, "ALTER USER USER() IDENTIFIED BY '%s'", typed_password);
+#endif /* WITH_WSREP */
 
         if (mysql_query(mysql, buff)) {
           if (mysql_errno(mysql) != 1290) {

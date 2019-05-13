@@ -178,6 +178,9 @@ enum options_client {
   OPT_DROP_COMPRESSION_DICTIONARY,
   OPT_ORDER_BY_PRIMARY_DESC,
   OPT_TLS_CIPHERSUITES,
+#ifdef WITH_WSREP
+  OPT_USE_SET_PASSWORD,
+#endif /* WITH_WSREP */
   /* Add new option above this */
   OPT_MAX_CLIENT_OPTION
 };
