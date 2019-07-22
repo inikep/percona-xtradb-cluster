@@ -3218,7 +3218,7 @@ void srv_start_threads(bool bootstrap) {
   }
 
 #ifdef WITH_WSREP
-  if (!wsrep_recovery) {
+  if (!get_wsrep_recovery()) {
     /* Skip creating buffer pool dump thread during wsrep
     co-ordinate recovery (triggered using --wsrep-recover option). */
     srv_threads.m_buf_dump =

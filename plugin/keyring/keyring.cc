@@ -37,10 +37,6 @@
 #include "plugin/keyring/buffered_file_io.h"
 #include "plugin/keyring/common/keyring.h"
 
-#ifdef WITH_WSREP
-//extern bool wsrep_is_wsrep_on(void);
-#endif /* WITH_WSREP */
-
 #ifdef _WIN32
 #define MYSQL_DEFAULT_KEYRINGFILE MYSQL_KEYRINGDIR "\\keyring"
 #else
