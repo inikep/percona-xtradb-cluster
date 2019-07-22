@@ -35,7 +35,10 @@
 #include "my_config.h"
 
 #ifdef WITH_WSREP
+#include "mysql/components/services/log_builtins.h"
 #include "wsrep_mysqld.h"
+#include "wsrep_trans_observer.h"
+#include "service_wsrep.h"
 #endif /* WITH_WSREP */
 
 #include <errno.h>
@@ -3853,7 +3856,7 @@ bool show_slave_status_cmd(THD *thd) {
     my_error(ER_SLAVE_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0),
              "SHOW SLAVE STATUS", lex->mi.channel);
     channel_map.unlock();
-    DBUG_RETURN(true);
+    return true;
   }
 #endif
   else {
@@ -4433,14 +4436,16 @@ apply_event_and_update_pos(Log_event **ptr_ev, THD *thd, Relay_log_info *rli) {
     exec_res = ev->apply_event(rli);
 
 #ifdef WITH_WSREP
-    if (exec_res && thd->wsrep_conflict_state != NO_CONFLICT) {
+    mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+    if (exec_res &&
+        thd->wsrep_trx().state() != wsrep::transaction::s_executing) {
       WSREP_DEBUG("Apply Event failed (Reason: %d, Conflict-State: %s)",
-                  exec_res,
-                  wsrep_get_conflict_state(thd->wsrep_conflict_state));
+                  exec_res, wsrep_thd_client_state_str(thd));
       rli->abort_slave = 1;
       rli->report(ERROR_LEVEL, ER_UNKNOWN_COM_ERROR,
                   "Node has dropped from cluster");
     }
+    mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
 #endif /* WITH_WSREP */
 
     DBUG_EXECUTE_IF("simulate_stop_when_mts_in_group",
@@ -4849,6 +4854,13 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
   }
 
   if (ev) {
+#ifdef WITH_WSREP
+    if (wsrep_before_statement(thd)) {
+      WSREP_INFO("Wsrep before statement error");
+      return 1;
+    }
+#endif /* WITH_WSREP */
+
     enum enum_slave_apply_event_and_update_pos_retval exec_res;
 
     ptr_ev = &ev;
@@ -4883,6 +4895,9 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
       */
       rli->abort_slave = 1;
       mysql_mutex_unlock(&rli->data_lock);
+#ifdef WITH_WSREP
+      wsrep_after_statement(thd);
+#endif /* WITH_WSREP */
       delete ev;
       return 1;
     }
@@ -4902,6 +4917,9 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
                 Transaction_ctx::SESSION));
             rli->abort_slave = 1;
             mysql_mutex_unlock(&rli->data_lock);
+#ifdef WITH_WSREP
+            wsrep_after_statement(thd);
+#endif /* WITH_WSREP */
             delete ev;
             rli->inc_event_relay_log_pos();
             return 0;
@@ -4998,13 +5016,18 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
     */
     if (exec_res >= SLAVE_APPLY_EVENT_AND_UPDATE_POS_UPDATE_POS_ERROR) {
       delete ev;
+#ifdef WITH_WSREP
+      wsrep_after_statement(thd);
+#endif /* WITH_WSREP */
       return 1;
     }
 
 #ifdef WITH_WSREP
     mysql_mutex_lock(&thd->LOCK_wsrep_thd);
-    if (thd->wsrep_conflict_state == NO_CONFLICT) {
-      mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+    enum wsrep::client_error wsrep_error = thd->wsrep_cs().current_error();
+    mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+
+    if (wsrep_error == wsrep::e_success) {
 #endif /* WITH_WSREP */
 
     if (slave_trans_retries) {
@@ -5114,8 +5137,6 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
       }
     }
 #ifdef WITH_WSREP
-    } else {
-      mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
     }
 #endif /* WITH_WSREP */
     if (exec_res) {
@@ -5126,8 +5147,14 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
       mysql_mutex_lock(&rli->data_lock);
       rli->abort_slave = 1;
       mysql_mutex_unlock(&rli->data_lock);
+#ifdef WITH_WSREP
+      wsrep_after_statement(thd);
+#endif /* WITH_WSREP */
       return 1;
     }
+#ifdef WITH_WSREP
+    wsrep_after_statement(thd);
+#endif /* WITH_WSREP */
     return exec_res;
   }
 
@@ -5928,6 +5955,14 @@ static void *handle_slave_worker(void *arg) {
   thd_manager->add_thd(thd);
   thd_added = true;
 
+#ifdef WITH_WSREP
+  wsrep_open(thd);
+  if (wsrep_before_command(thd)) {
+    WSREP_WARN("Slave SQL worker wsrep_before_command() failed");
+    goto err;
+  }
+#endif /* WITH_WSREP */
+
   if (w->update_is_transactional()) {
     rli->report(ERROR_LEVEL, ER_SLAVE_FATAL_ERROR,
                 ER_THD(thd, ER_SLAVE_FATAL_ERROR),
@@ -6016,6 +6051,12 @@ static void *handle_slave_worker(void *arg) {
   mysql_mutex_unlock(&w->jobs_lock);
 
 err:
+
+#ifdef WITH_WSREP
+  wsrep_after_command_before_result(thd);
+  wsrep_after_command_after_result(thd);
+  wsrep_close(thd);
+#endif /* WITH_WSREP */
 
   if (thd) {
     /*
@@ -7054,18 +7095,6 @@ wsrep_restart_point:
     THD_CHECK_SENTRY(thd);
     DBUG_ASSERT(rli->info_thd == thd);
 
-#ifdef WITH_WSREP
-  thd->wsrep_exec_mode = LOCAL_STATE;
-  /* synchronize with wsrep replication */
-  if (WSREP_ON) {
-    thd->wsrep_po_handle = WSREP_PO_INITIALIZER;
-    thd->wsrep_po_cnt = 0;
-    thd->wsrep_po_in_trans = false;
-    memset(&thd->wsrep_po_sid, 0, sizeof(thd->wsrep_po_sid));
-    wsrep_ready_wait();
-  }
-#endif /* WITH_WSREP */
-
     DBUG_PRINT("master_info", ("log_file_name: %s  position: %s",
                                rli->get_group_master_log_name(),
                                llstr(rli->get_group_master_log_pos(), llbuff)));
@@ -7142,6 +7171,14 @@ wsrep_restart_point:
     }
     mysql_mutex_unlock(&rli->data_lock);
 
+#ifdef WITH_WSREP
+    wsrep_open(thd);
+    if (wsrep_before_command(thd)) {
+      WSREP_WARN("Slave SQL wsrep_before_command() failed");
+      goto err;
+    }
+#endif /* WITH_WSREP */
+
     /* Read queries from the IO/THREAD until this thread is killed */
 
     while (!sql_slave_killed(thd, rli)) {
@@ -7200,12 +7237,9 @@ wsrep_restart_point:
              llstr(rli->get_group_master_log_pos(), llbuff));
 
 #ifdef WITH_WSREP
-  if (WSREP_ON) {
-    if (wsrep->preordered_commit(wsrep, &thd->wsrep_po_handle, NULL, 0, 0,
-                                 false)) {
-      WSREP_WARN("preordered cleanup failed");
-    }
-  }
+    wsrep_after_command_before_result(thd);
+    wsrep_after_command_after_result(thd);
+    wsrep_close(thd);
 #endif /* WITH_WSREP */
 
     delete rli->current_mts_submode;
@@ -7303,28 +7337,29 @@ wsrep_restart_point:
     delete thd;
 
 #ifdef WITH_WSREP
-  /* if slave stopped due to node going non primary, we set global flag to
-     trigger automatic restart of slave when node joins back to cluster
-  */
-  if (wsrep_node_dropped && wsrep_restart_slave) {
-    if (wsrep_ready_get()) {
-      WSREP_INFO(
-          "Slave error due to node temporarily went non-primary"
-          "SQL slave will continue");
-      wsrep_node_dropped = false;
-      mysql_mutex_unlock(&rli->run_lock);
-      WSREP_INFO("Restarting Slave (conflict-state: %s)",
-                 wsrep_get_conflict_state(thd->wsrep_conflict_state));
-      thd->wsrep_conflict_state = NO_CONFLICT;
-      goto wsrep_restart_point;
-    } else {
-      WSREP_INFO("Slave error due to node going non-primary");
-      WSREP_INFO(
-          "wsrep_restart_slave is set. Slave will automatically"
-          " restart when node joins back the cluster");
-      wsrep_restart_slave_activated = true;
+    /* if slave stopped due to node going non primary, we set global flag to
+       trigger automatic restart of slave when node joins back to cluster
+    */
+    if (WSREP_ON && wsrep_node_dropped && wsrep_restart_slave) {
+      if (wsrep_ready_get()) {
+        WSREP_INFO(
+            "Slave error due to node temporarily went non-primary"
+            "SQL slave will continue");
+        wsrep_node_dropped = false;
+        mysql_mutex_unlock(&rli->run_lock);
+        WSREP_INFO("Restarting Slave (conflict-state: %s)",
+                   wsrep_thd_client_state_str(thd));
+        goto wsrep_restart_point;
+      } else {
+        WSREP_INFO("Slave error due to node going non-primary");
+        WSREP_INFO(
+            "wsrep_restart_slave is set. Slave will automatically"
+            " restart when node joins back the cluster");
+        wsrep_restart_slave_activated = true;
+      }
     }
-  }
+    // wsrep_close(thd);
+#endif /* WITH_WSREP */
 
     /*
      Note: the order of the broadcast and unlock calls below (first broadcast,
@@ -9208,7 +9243,7 @@ bool reset_slave_cmd(THD *thd) {
     my_error(ER_SLAVE_CHANNEL_OPERATION_NOT_ALLOWED, MYF(0),
              "RESET SLAVE [ALL] FOR CHANNEL", lex->mi.channel);
     channel_map.unlock();
-    DBUG_RETURN(true);
+    return true;
   }
 #endif /* WITH_WSREP */
   else {

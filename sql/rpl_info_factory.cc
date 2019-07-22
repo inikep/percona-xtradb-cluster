@@ -71,7 +71,7 @@ Rpl_info_factory::struct_file_data Rpl_info_factory::worker_file_data;
 Rpl_info_factory::struct_table_data Rpl_info_factory::worker_table_data;
 
 #ifdef WITH_WSREP
-Rpl_filter  wsrep_filter;
+Rpl_filter wsrep_filter;
 #endif /* WITH_WSREP */
 
 /**
@@ -975,7 +975,7 @@ bool Rpl_info_factory::configure_channel_replication_filters(
      channel to be configurable
   */
   if (wsrep_is_wsrep_channel_name(channel_name))
-    DBUG_RETURN(false);
+    return false;
 #endif /* WITH_WSREP */
 
   if (Master_info::is_configured(rli->mi)) {
