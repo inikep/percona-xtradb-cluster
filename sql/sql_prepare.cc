@@ -2710,10 +2710,6 @@ bool Prepared_statement::set_parameters(String *expanded_query) {
   return false;
 }
 
-#ifdef WITH_WSREP
-void wsrep_replay_transaction(THD *thd);
-#endif /* WITH_WSREP */
-
 /**
   Disables the general log for the current session by setting the OPTION_LOG_OFF
   bit in thd->variables.option_bits.

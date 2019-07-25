@@ -5024,6 +5024,8 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
       }
       thd->is_slave_error = 1;
 
+#if 0
+      // wsrep_apply_toi is no more being used. So the said block is dead.
 #ifdef WITH_WSREP
       // TODO: G-4: Need to findout why to ignore this error if TOI ?
       // There are certain TOI errors that can be ignored say like
@@ -5034,6 +5036,7 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
         thd->wsrep_has_ignored_error = true;
       }
 #endif /* WITH_WSREP */
+#endif /* 0 */
     }
 
     /*
