@@ -718,10 +718,6 @@ class ha_innobase : public handler {
 
   /** If mysql has locked with external_lock() */
   bool m_mysql_has_locked;
-#ifdef WITH_WSREP
-  /** number of write_row() calls */
-  uint m_num_write_row;
-#endif /* WITH_WSREP */
 };
 
 #ifdef WITH_WSREP

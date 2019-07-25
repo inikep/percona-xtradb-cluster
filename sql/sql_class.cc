@@ -443,7 +443,6 @@ THD::THD(bool enable_plugins)
       wsrep_retry_query_len(0),
       wsrep_retry_command(COM_CONNECT),
       wsrep_consistency_check(NO_CONSISTENCY_CHECK),
-      wsrep_mysql_replicated(0),
       wsrep_TOI_pre_query(NULL),
       wsrep_TOI_pre_query_len(0),
       wsrep_po_handle(WSREP_PO_INITIALIZER),
@@ -451,7 +450,6 @@ THD::THD(bool enable_plugins)
       wsrep_apply_format(0),
       wsrep_apply_toi(false),
       wsrep_rbr_buf(NULL),
-      wsrep_sync_wait_gtid(WSREP_GTID_UNDEFINED),
       wsrep_affected_rows(0),
       wsrep_has_ignored_error(false),
       wsrep_replicate_GTID(false),
@@ -459,12 +457,9 @@ THD::THD(bool enable_plugins)
       /* pxc specific (private varaibles) */
       wsrep_gtid_event_buf(NULL),
       wsrep_gtid_event_buf_len(0),
-      wsrep_sst_donor(false),
-      wsrep_void_applier_trx(true),
       wsrep_skip_wsrep_GTID(false),
       wsrep_skip_SE_checkpoint(false),
       wsrep_skip_wsrep_hton(false),
-      wsrep_split_trx(false),
       wsrep_intermediate_commit(false),
       wsrep_non_replicating_atomic_ddl(false),
       wsrep_safe_to_abort(true),
@@ -910,7 +905,6 @@ void THD::init(void) {
   wsrep_rli = NULL;
   wsrep_PA_safe = true;
   wsrep_consistency_check = NO_CONSISTENCY_CHECK;
-  wsrep_mysql_replicated = 0;
   wsrep_TOI_pre_query = NULL;
   wsrep_TOI_pre_query_len = 0;
   wsrep_rbr_buf = NULL;
@@ -922,12 +916,9 @@ void THD::init(void) {
 
   m_wsrep_next_trx_id = WSREP_UNDEFINED_TRX_ID;
 
-  wsrep_sst_donor = false;
-  wsrep_void_applier_trx = true;
   wsrep_skip_wsrep_GTID = false;
   wsrep_skip_SE_checkpoint = false;
   wsrep_skip_wsrep_hton = false;
-  wsrep_split_trx = false;
   wsrep_intermediate_commit = false;
   wsrep_non_replicating_atomic_ddl = false;
   wsrep_safe_to_abort = true;
