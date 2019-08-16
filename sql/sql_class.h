@@ -2879,8 +2879,8 @@ class THD : public MDL_context_owner,
   */
   bool wsrep_skip_wsrep_hton;
 
-  /* Set to true if intermediate commit is active. Use to skip
-  update of wsrep co-ordinates for intermediate commit. */
+  /* Set to true if an intermediate commit is active. Use to skip
+  update of wsrep co-ordinates for an intermediate commit. */
   bool wsrep_intermediate_commit;
 
   /**
@@ -2918,10 +2918,11 @@ class THD : public MDL_context_owner,
   bool wsrep_replayer;
 
   /**
-    Capture if transaction needs to run the wsrep commit hooks
-    MyISAM/Local state transaction are not replicated so no need to run
-    wsrep commit hook. Same way TOI replicated transaction may still use
-    group commit protocol (DDL) but should avoid wsrep commit hooks. */
+    Capture if transaction (running with binlog=off) needs to run the
+    wsrep commit hooks. MyISAM/Local state transaction are not replicated so no
+    need to run wsrep commit hook. Same way TOI replicated transaction may
+    still use group commit protocol (DDL) but should avoid wsrep commit hooks.
+  */
   bool run_wsrep_commit_hooks;
 
   /**
@@ -2931,6 +2932,20 @@ class THD : public MDL_context_owner,
     to execute commit hooks and re-use it to fire ordered commit.
   */
   bool run_wsrep_ordered_commit;
+
+  /**
+    Force group commit protocol for transactions that logs fragments
+    to wsrep_streaming_log as these transactions runs with binlog disabled
+    even though system wide setting may enforce binlog enabled.
+    (this special setting is done to ensure update to wsrep_streaming_log
+     is not replicated across the cluster).
+    Given binlog is disabled for some internal transaction and other
+    continue to work with binlog enabled (following group commit) some
+    co-ordination needs to be worked out to ensure wsrep co-ordinates
+    are updated as per the seqno.
+    Variable is set to true as part of this co-ordination framework.
+  */
+  bool wsrep_enforce_group_commit;
 
   /*
     Transaction id:
