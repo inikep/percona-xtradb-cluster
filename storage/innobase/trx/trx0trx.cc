@@ -1461,7 +1461,7 @@ static bool trx_write_serialisation_history(
     mtr_t *mtr) /*!< in/out: mini-transaction */
 {
 #ifdef WITH_WSREP
-  trx_sysf_t *sys_header;
+  trx_sysf_t *sys_header = NULL;
 #endif /* WITH_WSREP */
 
   /* Change the undo log segment states from TRX_UNDO_ACTIVE to some
