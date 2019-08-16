@@ -1465,7 +1465,7 @@ static bool trx_write_serialisation_history(
     mtr_t *mtr) /*!< in/out: mini-transaction */
 {
 #ifdef WITH_WSREP
-  trx_sysf_t *sys_header;
+  trx_sysf_t *sys_header = NULL;
 #endif /* WITH_WSREP */
 
   /* Change the undo log segment states from TRX_UNDO_ACTIVE to some
@@ -1579,7 +1579,6 @@ static bool trx_write_serialisation_history(
     DBUG_SUICIDE();
   });
 
-  sys_header = trx_sysf_get(mtr);
 
   /* Update latest MySQL wsrep XID in trx sys header.
   If given transaction is marked for replay then avoid updating
@@ -1599,6 +1598,8 @@ static bool trx_write_serialisation_history(
   }
 
   trx->wsrep_recover_xid = NULL;
+
+  sys_header = trx_sysf_get(mtr);
 #endif /* WITH_WSREP */
 
   /* Update the latest MySQL binlog name and offset info
