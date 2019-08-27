@@ -1461,9 +1461,11 @@ void RecLock::lock_add(lock_t *lock, bool add_to_hash) {
         /* have to release trx mutex for the duration of
         victim lock release. This will eventually call
         lock_grant, which wants to grant trx mutex again */
+        trx->owns_mutex = false;
         trx_mutex_exit(trx);
         lock_cancel_waiting_and_release(c_lock->trx->lock.wait_lock, true);
         trx_mutex_enter(trx);
+        trx->owns_mutex = true;
 
         /* trx might not wait for c_lock, but some other lock
         does not matter if wait_lock was released above */
