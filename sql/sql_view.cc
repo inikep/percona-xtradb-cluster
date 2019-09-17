@@ -1693,11 +1693,33 @@ bool mysql_drop_view(THD *thd, TABLE_LIST *views) {
       my_error(ER_WRONG_OBJECT, MYF(0), view->db, view->table_name, "VIEW");
       return true;
     }
+
+#ifdef WITH_WSREP
+    /* WSREP flow does this check before kick-starting final view drop
+    so that it can safely initiate TOI replication. */
+    if (at != NULL) {
+      const dd::View *vw = dynamic_cast<const dd::View *>(at);
+
+      /*
+        If definer has the SYSTEM_USER privilege then invoker can drop view
+        only if latter also has same privilege.
+      */
+      Auth_id definer(vw->definer_user().c_str(), vw->definer_host().c_str());
+      if (sctx->can_operate_with(definer, consts::system_user, true))
+        return true;
+    }
+#endif /* WITH_WSREP */
   }
   if (non_existant_views.length()) {
     my_error(ER_BAD_TABLE_ERROR, MYF(0), non_existant_views.c_ptr());
     return true;
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL)) {
+    return true;
+  }
+#endif /* WITH_WSREP */
 
   // Then actually start dropping views.
   for (TABLE_LIST *view = views; view; view = view->next_local) {
