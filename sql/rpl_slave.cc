@@ -8527,7 +8527,8 @@ bool flush_relay_logs_cmd(THD *thd) {
       /*
         Log warning on SQL or worker threads.
       */
-      LogErr(WARNING_LEVEL, ER_SLAVE_CHANNEL_OPERATION_NOT_ALLOWED,
+      WSREP_ERROR("FLUSH RELAY LOGS cannot be performed on channel 'wsrep'");
+      LogErr(WARNING_LEVEL, ER_RPL_SLAVE_INCORRECT_CHANNEL,
              lex->mi.channel);
     } else {
       /*
