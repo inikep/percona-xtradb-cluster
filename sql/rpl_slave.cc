@@ -7192,9 +7192,14 @@ wsrep_restart_point:
 
       if (exec_relay_log_event(thd, rli, &applier_reader)) {
 #ifdef WITH_WSREP
-      if (thd->wsrep_conflict_state != NO_CONFLICT) {
-        wsrep_node_dropped = 1;
-        rli->abort_slave = 1;
+      if (WSREP_ON) {
+        mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+
+        if (thd->wsrep_cs().current_error()) {
+          wsrep_node_dropped = true;
+          rli->abort_slave = true;
+        }
+        mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
       }
 #endif /* WITH_WSREP */
         DBUG_PRINT("info", ("exec_relay_log_event() failed"));

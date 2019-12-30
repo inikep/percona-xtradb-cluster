@@ -33,20 +33,6 @@
 class set_var;
 class THD;
 
-enum wsrep_conflict_state {
-  NO_CONFLICT,
-  MUST_ABORT,
-  ABORTING,
-  ABORTED,
-  MUST_REPLAY,
-  REPLAYING,
-  REPLAYED,
-  RETRY_AUTOCOMMIT,
-  CERT_FAILURE,
-};
-
-enum wsrep_conflict_state wsrep_thd_conflict_state(THD *thd);
-
 /* this while concept of consistency check was added so that pt-checksum
 can run the command to consistency of the all the nodes of the cluster.
 pt-checksum will fire DML with special version comment that will allow
