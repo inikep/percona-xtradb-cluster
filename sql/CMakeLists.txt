@@ -791,7 +791,7 @@ ENDIF()
 IF(MY_COMPILER_IS_GNU_OR_CLANG)
   ADD_COMPILE_FLAGS(${CMAKE_CURRENT_BINARY_DIR}/sql_yacc.cc
                     ${CMAKE_CURRENT_BINARY_DIR}/sql_hints.yy.cc
-                    COMPILE_FLAGS "-Wno-undef")
+                    COMPILE_FLAGS "-Wno-undef -Wno-unused-label")
 
 ENDIF()
 
