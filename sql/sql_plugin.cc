@@ -922,6 +922,11 @@ static plugin_ref intern_plugin_lock(LEX *lex, plugin_ref rc) {
   st_plugin_int *pi = plugin_ref_to_int(rc);
   DBUG_TRACE;
 
+#ifdef WITH_WSREP
+  // TODO why plugin_ref could be NULL ?
+  if (!rc) return NULL;
+#endif /* WITH_WSREP */
+
   mysql_mutex_assert_owner(&LOCK_plugin);
 
   if (pi->state & (PLUGIN_IS_READY | PLUGIN_IS_UNINITIALIZED)) {
@@ -2207,6 +2212,11 @@ static bool mysql_install_plugin(THD *thd, LEX_CSTRING name,
       check_table_access(thd, INSERT_ACL, &tables, false, 1, false))
     return true;
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
+
   if (acquire_shared_global_read_lock(thd, thd->variables.lock_wait_timeout) ||
       acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
     return true;
@@ -2396,6 +2406,11 @@ static bool mysql_uninstall_plugin(THD *thd, LEX_CSTRING name) {
     DBUG_ASSERT(thd->is_error());
     return true;
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
 
   if (acquire_shared_global_read_lock(thd, thd->variables.lock_wait_timeout) ||
       acquire_shared_backup_lock(thd, thd->variables.lock_wait_timeout))
@@ -3010,7 +3025,11 @@ void plugin_thdvar_init(THD *thd, bool enable_plugins) {
   thd->variables.dynamic_variables_size = 0;
   thd->variables.dynamic_variables_ptr = 0;
 
+#ifdef WITH_WSREP
+  if ((!WSREP(thd) || !thd->wsrep_applier) && enable_plugins) {
+#else
   if (enable_plugins) {
+#endif /* WITH_WSREP */
     mysql_mutex_lock(&LOCK_plugin);
     thd->variables.table_plugin =
         my_intern_plugin_lock(NULL, global_system_variables.table_plugin);
@@ -3522,6 +3541,19 @@ static int test_plugin_options(MEM_ROOT *tmp_root, st_plugin_int *tmp,
   if (!(my_strcasecmp(&my_charset_latin1, tmp->name.str, "federated") &&
         my_strcasecmp(&my_charset_latin1, tmp->name.str, "ndbcluster")))
     plugin_load_option = PLUGIN_OFF;
+
+#ifdef WITH_WSREP
+  /*
+    PXC needs these plugins loaded to avoid node level inconsistency.
+    PXC expect user to operate all nodes with same configuration and failure
+    to load plugin will suppress the check that can create a scenario
+    where-in some node of the cluster operates with plugin enabled
+    and some with plugin disabled even though the configuration is same
+    on all nodes. */
+  if (!(my_strcasecmp(&my_charset_latin1, tmp->name.str, "keyring_file") &&
+        my_strcasecmp(&my_charset_latin1, tmp->name.str, "keyring_vault")))
+    plugin_load_option = PLUGIN_FORCE;
+#endif /* WITH_WSREP */
 
   for (opt = tmp->plugin->system_vars; opt && *opt; opt++)
     count += 2; /* --{plugin}-{optname} and --plugin-{plugin}-{optname} */

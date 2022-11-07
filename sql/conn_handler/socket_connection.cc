@@ -599,6 +599,12 @@ class TCP_socket {
     (void)mysql_sock_set_nonblocking(listener_socket);
 #endif
 
+#if defined(WITH_WSREP) && defined(HAVE_FCNTL) && defined(FD_CLOEXEC)
+    /* Set the flag for all tcp socket. This ensure all fd are closed
+    when SST process is execed. */
+    (void)fcntl(mysql_socket_getfd(listener_socket), F_SETFD, FD_CLOEXEC);
+#endif /* WITH_WSREP */
+
     return listener_socket;
   }
 };
@@ -700,6 +706,12 @@ class Unix_socket {
 #if !defined(NO_FCNTL_NONBLOCK)
     (void)mysql_sock_set_nonblocking(listener_socket);
 #endif
+
+#if defined(WITH_WSREP) && defined(HAVE_FCNTL) && defined(FD_CLOEXEC)
+    /* Set the flag for all tcp socket. This ensure all fd are closed
+    when SST process is execed. */
+    (void)fcntl(mysql_socket_getfd(listener_socket), F_SETFD, FD_CLOEXEC);
+#endif /* WITH_WSREP */
 
     return listener_socket;
   }
@@ -1409,6 +1421,14 @@ Channel_info *Mysqld_socket_listener::listen_for_connection_event() {
       restore_original_network_namespace())
     return nullptr;
 #endif
+
+#if defined(WITH_WSREP) && defined(HAVE_FCNTL) && defined(FD_CLOEXEC)
+  /* Set the flag for all tcp socket. This ensure all fd are closed
+  when SST process is execed.
+  TODO: this call may not be needed as SST happens before MySQL start
+  accepting connection. */
+  (void)fcntl(mysql_socket_getfd(connect_sock), F_SETFD, FD_CLOEXEC);
+#endif /* WITH_WSREP */
 
 #ifdef HAVE_LIBWRAP
   if (!is_unix_socket &&

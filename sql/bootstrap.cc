@@ -354,6 +354,9 @@ bool run_bootstrap_thread(const char *file_name, MYSQL_FILE *file,
 
   THD *thd = new THD;
   thd->system_thread = thread_type;
+#ifdef WITH_WSREP
+  thd->variables.wsrep_on = 0;
+#endif /* WITH_WSREP */
   thd->get_protocol_classic()->init_net(NULL);
   // Skip grants and set the system_user flag in THD.
   thd->security_context()->skip_grants();
