@@ -151,6 +151,12 @@
 #include "sql/transaction_info.h"
 #include "sql/tztime.h"  // Time_zone
 #include "thr_lock.h"
+
+#ifdef WITH_WSREP
+#include "wsrep_mysqld.h"
+#include "wsrep_xid.h"
+#endif /* WITH_WSREP */
+
 #define window_size Log_throttle::LOG_THROTTLE_WINDOW_SIZE
 Error_log_throttle slave_ignored_err_throttle(
     window_size, INFORMATION_LEVEL, ER_SERVER_SLAVE_IGNORED_TABLE, "Repl",
@@ -3713,7 +3719,20 @@ bool is_atomic_ddl(THD *thd, bool using_trans_arg) {
     case SQLCOM_CREATE_VIEW:
     case SQLCOM_DROP_VIEW:
 
+#ifdef WITH_WSREP
+      /*
+        MySQL-8.0 enabled atomic DDL but to PXC still needs time to adapt to
+        real atomic DDL flow so for now DDL still use TOI sequence.
+        When the Query_log_event is generated for TOI replication skip
+        the said test/assert that check if the transaction is enabled for
+        atomic ddl supporting statement. Use of wsrep_skip_wsrep_hton is really
+        a hack or short-cut to avoid introducing another variable for this
+      */
+      DBUG_ASSERT(using_trans_arg || thd->slave_thread || lex->drop_if_exists ||
+                  thd->wsrep_skip_wsrep_hton);
+#else
       DBUG_ASSERT(using_trans_arg || thd->slave_thread || lex->drop_if_exists);
+#endif /* WITH_WSREP */
 
       break;
 
@@ -3722,8 +3741,14 @@ bool is_atomic_ddl(THD *thd, bool using_trans_arg) {
         trx cache is *not* used if event already exists and IF NOT EXISTS clause
         is used in the statement or if call is from the slave applier.
       */
+#ifdef WITH_WSREP
+      DBUG_ASSERT(using_trans_arg || thd->slave_thread ||
+                  (lex->create_info->options & HA_LEX_CREATE_IF_NOT_EXISTS) ||
+                  thd->wsrep_skip_wsrep_hton);
+#else
       DBUG_ASSERT(using_trans_arg || thd->slave_thread ||
                   (lex->create_info->options & HA_LEX_CREATE_IF_NOT_EXISTS));
+#endif /* WITH_WSREP */
       break;
 
     default:
@@ -3769,6 +3794,16 @@ Query_log_event::Query_log_event(THD *thd_arg, const char *query_arg,
                       : Log_event::EVENT_STMT_CACHE,
           Log_event::EVENT_NORMAL_LOGGING, header(), footer()),
       data_buf(nullptr) {
+
+#ifdef WITH_WSREP
+  /*
+    If Query_log_event will contain non trans keyword (not BEGIN, COMMIT,
+    SAVEPOINT or ROLLBACK) we disable PA for this transaction.
+   */
+  /* PA_safe = true indicate that write-set can be applied in parallel. */
+  if (!is_trans_keyword()) thd->wsrep_PA_safe = false;
+#endif /* WITH_WSREP */
+
   /* save the original thread id; we already know the server id */
   slave_proxy_id = thd_arg->variables.pseudo_thread_id;
   common_header->set_is_valid(query != 0);
@@ -3993,7 +4028,16 @@ Query_log_event::Query_log_event(THD *thd_arg, const char *query_arg,
     /* and the transaction's xid has been already computed. */
     DBUG_ASSERT(!trn_ctx->xid_state()->get_xid()->is_null());
 
+#ifdef WITH_WSREP
+    /* Step below generates DDL xid. Now that DDL are atomic (mysql-8.0)
+    DDL is also assigned a valid xid. When running in cluster mode assign
+    wsrep-xid to ensure that sequence is maintained for DDL and DML statement.*/
+    my_xid xid = (wsrep_is_wsrep_xid(trn_ctx->xid_state()->get_xid())
+                      ? wsrep_xid_seqno(*trn_ctx->xid_state()->get_xid())
+                      : trn_ctx->xid_state()->get_xid()->get_my_xid());
+#else
     my_xid xid = trn_ctx->xid_state()->get_xid()->get_my_xid();
+#endif /* WITH_WSREP */
 
     /*
       xid uniqueness: the last time used not equal to the current one
@@ -4777,9 +4821,17 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
         clear_all_errors(
             thd, const_cast<Relay_log_info *>(rli)); /* Can ignore query */
       else {
+#ifdef WITH_WSREP
+        rli->report(ERROR_LEVEL, ER_ERROR_ON_MASTER,
+                    ER_THD(thd, ER_ERROR_ON_MASTER), expected_error,
+                    (!opt_general_log_raw) && thd->rewritten_query.length()
+                        ? thd->rewritten_query.c_ptr_safe()
+                        : thd->query().str);
+#else
         rli->report(ERROR_LEVEL, ER_ERROR_ON_MASTER,
                     ER_THD(thd, ER_ERROR_ON_MASTER), expected_error,
                     thd->query().str);
+#endif /* WITH_WSREP */
         thd->is_slave_error = 1;
       }
       goto end;
@@ -4864,7 +4916,14 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
             ER_THD(thd, ER_INCONSISTENT_ERROR), ER_THD(thd, expected_error),
             expected_error,
             (actual_error ? thd->get_stmt_da()->message_text() : "no error"),
+#ifdef WITH_WSREP
+            actual_error, print_slave_db_safe(db),
+            ((!opt_general_log_raw) && thd->rewritten_query.length()
+                 ? thd->rewritten_query.c_ptr_safe()
+                 : query_arg));
+#else
             actual_error, print_slave_db_safe(db), query_arg);
+#endif /* WITH_WSREP */
         thd->is_slave_error = 1;
       } else {
         rli->report(INFORMATION_LEVEL, actual_error,
@@ -4914,7 +4973,14 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
                     "Error '%s' on query. Default database: '%s'. Query: '%s'",
                     (actual_error ? thd->get_stmt_da()->message_text()
                                   : "unexpected success or fatal error"),
+#ifdef WITH_WSREP
+                    print_slave_db_safe(db),
+                    ((!opt_general_log_raw) && thd->rewritten_query.length()
+                         ? thd->rewritten_query.c_ptr_safe()
+                         : query_arg));
+#else
                     print_slave_db_safe(thd->db().str), query_arg);
+#endif /* WITH_WSREP */
       }
       thd->is_slave_error = 1;
     }
@@ -5921,6 +5987,9 @@ Log_event::enum_skip_reason Rand_log_event::do_shall_skip(Relay_log_info *rli) {
 bool slave_execute_deferred_events(THD *thd) {
   bool res = false;
   Relay_log_info *rli = thd->rli_slave;
+#ifdef WITH_WSREP
+  if (thd->wsrep_applier) rli = thd->wsrep_rli;
+#endif /* WITH_WSREP */
 
   DBUG_ASSERT(rli &&
               (!rli->deferred_events_collecting || rli->deferred_events));
@@ -9416,6 +9485,18 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli) {
       DBUG_ASSERT(!debug_sync_set_action(thd, STRING_WITH_LEN(action)));
     };);
     if (open_and_lock_tables(thd, rli->tables_to_lock, 0)) {
+
+#ifdef WITH_WSREP
+      if (WSREP(thd)) {
+        WSREP_WARN(
+            "BF applier failed to open_and_lock_tables: %u, fatal: %s "
+            "wsrep = (exec_mode: %d conflict_state: %d seqno: %lld) ",
+            thd->get_stmt_da()->mysql_errno(),
+            thd->is_fatal_error() ? "true" : "false", thd->wsrep_exec_mode,
+            thd->wsrep_conflict_state, (long long)wsrep_thd_trx_seqno(thd));
+      }
+#endif /* WITH_WSREP */
+
       if (thd->is_error()) {
         uint actual_error = thd->get_stmt_da()->mysql_errno();
         if (ignored_error_code(actual_error)) {
@@ -10475,7 +10556,12 @@ static enum_tbl_map_status check_table_map(Relay_log_info const *rli,
   DBUG_ENTER("check_table_map");
   enum_tbl_map_status res = OK_TO_PROCESS;
 
+#ifdef WITH_WSREP
+  if ((rli->info_thd->slave_thread /* filtering is for slave only */ ||
+       (WSREP(rli->info_thd) && rli->info_thd->wsrep_applier)) &&
+#else
   if (rli->info_thd->slave_thread /* filtering is for slave only */ &&
+#endif /* WITH_WSREP */
       (!rli->rpl_filter->db_ok(table_list->db) ||
        (rli->rpl_filter->is_on() &&
         !rli->rpl_filter->tables_ok("", table_list))))
@@ -11940,6 +12026,18 @@ error:
 
 int Write_rows_log_event::do_exec_row(const Relay_log_info *const rli) {
   DBUG_ASSERT(m_table != nullptr);
+
+#ifdef WITH_WSREP
+  if (WSREP(thd)) {
+    THD_STAGE_INFO(thd, stage_wsrep_writing_rows);
+    snprintf(thd->wsrep_info, sizeof(thd->wsrep_info),
+             "wsrep: writing row for write-set (%lld)",
+             (long long)wsrep_thd_trx_seqno(thd));
+    WSREP_DEBUG("%s", thd->wsrep_info);
+    thd_proc_info(thd, thd->wsrep_info);
+  }
+#endif /* WITH_WSREP */
+
   int error = write_row(rli, rbr_exec_mode == RBR_EXEC_MODE_IDEMPOTENT);
 
   if (error && !thd->is_error()) {
@@ -12048,6 +12146,18 @@ int Delete_rows_log_event::do_exec_row(const Relay_log_info *const rli) {
     error = unpack_current_row(rli, &m_cols, false, false);
     if (error) return error;
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd)) {
+    THD_STAGE_INFO(thd, stage_wsrep_deleting_rows);
+    snprintf(thd->wsrep_info, sizeof(thd->wsrep_info),
+             "wsrep: deleting row for write-set (%lld)",
+             (long long)wsrep_thd_trx_seqno(thd));
+    WSREP_DEBUG("%s", thd->wsrep_info);
+    thd_proc_info(thd, thd->wsrep_info);
+  }
+#endif /* WITH_WSREP */
+
   /* m_table->record[0] contains the BI */
   m_table->mark_columns_per_binlog_row_image(thd);
   error = m_table->file->ha_delete_row(m_table->record[0]);
@@ -12220,6 +12330,17 @@ int Update_rows_log_event::do_exec_row(const Relay_log_info *const rli) {
   DBUG_PRINT("info", ("Updating row in table"));
   DBUG_DUMP("old record", m_table->record[1], m_table->s->reclength);
   DBUG_DUMP("new values", m_table->record[0], m_table->s->reclength);
+
+#ifdef WITH_WSREP
+  if (WSREP(thd)) {
+    THD_STAGE_INFO(thd, stage_wsrep_updating_rows);
+    snprintf(thd->wsrep_info, sizeof(thd->wsrep_info),
+             "wsrep: updating row for write-set (%lld)",
+             (long long)wsrep_thd_trx_seqno(thd));
+    WSREP_DEBUG("%s", thd->wsrep_info);
+    thd_proc_info(thd, thd->wsrep_info);
+  }
+#endif /* WITH_WSREP */
 
   m_table->mark_columns_per_binlog_row_image(thd);
   error = m_table->file->ha_update_row(m_table->record[1], m_table->record[0]);
@@ -12820,6 +12941,42 @@ bool Gtid_log_event::write_data_body(Basic_ostream *ostream) {
 
 #endif  // MYSQL_SERVER
 
+#ifdef WITH_WSREP
+
+/* Capture GTID event if PXC node is acting as ASYNC-SLAVE.
+This GTID event is appended as part of write-set creation in wsrep_replicate */
+
+static void wsrep_capture_gtid_event(THD *thd, Gtid_log_event *ev) {
+  /* GTID events are also processed by applier but avoid capturing
+  them then. GTID events are captured only as part of async slave
+  replication. */
+  if (WSREP_ON && !thd->wsrep_applier) {
+    if (thd->wsrep_gtid_event_buf) {
+      WSREP_WARN(
+          "Pending to replicate MySQL GTID event"
+          " (probably a stale event). Discarding it now.");
+      my_free((uchar *)thd->wsrep_gtid_event_buf);
+      thd->wsrep_gtid_event_buf = NULL;
+      thd->wsrep_gtid_event_buf_len = 0;
+    }
+
+    ulong len = thd->wsrep_gtid_event_buf_len =
+        uint4korr(ev->temp_buf + EVENT_LEN_OFFSET);
+
+    thd->wsrep_gtid_event_buf =
+        (void *)my_realloc(key_memory_wsrep, thd->wsrep_gtid_event_buf,
+                           thd->wsrep_gtid_event_buf_len, MYF(0));
+
+    if (!thd->wsrep_gtid_event_buf) {
+      WSREP_WARN("GTID event allocation for slave failed");
+      thd->wsrep_gtid_event_buf_len = 0;
+    } else
+      memcpy(thd->wsrep_gtid_event_buf, ev->temp_buf, len);
+  }
+}
+
+#endif /* WITH_WSREP */
+
 int Gtid_log_event::do_apply_event(Relay_log_info const *rli) {
   DBUG_ENTER("Gtid_log_event::do_apply_event");
   DBUG_ASSERT(rli->info_thd == thd);
@@ -12896,6 +13053,10 @@ int Gtid_log_event::do_apply_event(Relay_log_info const *rli) {
   const_cast<Relay_log_info *>(rli)->started_processing(
       thd->variables.gtid_next.gtid, original_commit_timestamp,
       immediate_commit_timestamp, state == GTID_STATEMENT_SKIP);
+
+#ifdef WITH_WSREP
+  wsrep_capture_gtid_event(thd, this);
+#endif /* WITH_WSREP */
 
   /*
     If the current transaction contains no changes logged with SBR
