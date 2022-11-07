@@ -138,6 +138,9 @@ bool check_change_password(THD *thd, const char *host, const char *user,
   DBUG_ASSERT(initialized);
   sctx = thd->security_context();
   if (!thd->slave_thread &&
+#ifdef WITH_WSREP
+      (!WSREP(thd) || !thd->wsrep_applier) &&
+#endif /* WITH_WSREP */
       (strcmp(sctx->user().str, user) ||
        my_strcasecmp(system_charset_info, host, sctx->priv_host().str))) {
     if (sctx->password_expired()) {
@@ -164,6 +167,9 @@ bool check_change_password(THD *thd, const char *host, const char *user,
   }
 
   if (!thd->slave_thread && likely((get_server_state() == SERVER_OPERATING)) &&
+#ifdef WITH_WSREP
+      (!WSREP(thd) || !thd->wsrep_applier) &&
+#endif /* WITH_WSREP */
       !strcmp(thd->security_context()->priv_user().str, "")) {
     my_error(ER_PASSWORD_ANONYMOUS_USER, MYF(0));
     return true;
@@ -1420,6 +1426,10 @@ bool change_password(THD *thd, LEX_USER *lex_user, const char *new_password,
   int ret;
   sql_mode_t old_sql_mode = thd->variables.sql_mode;
 
+#ifdef WITH_WSREP
+  const LEX_CSTRING query_save = thd->query();
+#endif /* WITH_WSREP */
+
   DBUG_TRACE;
   DBUG_ASSERT(lex_user && lex_user->host.str);
   DBUG_PRINT("enter", ("host: '%s'  user: '%s' current_password: '%s' \
@@ -1440,8 +1450,29 @@ bool change_password(THD *thd, LEX_USER *lex_user, const char *new_password,
   */
   Save_and_Restore_binlog_format_state binlog_format_state(thd);
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && !thd->wsrep_applier) {
+    char buff[2048];
+    ulong query_length =
+        sprintf(buff, "SET PASSWORD FOR '%-.120s'@'%-.120s'='%-.120s'",
+                lex_user->user.str ? lex_user->user.str : "",
+                lex_user->host.str ? lex_user->host.str : "", new_password);
+    thd->set_query(buff, query_length);
+
+    if ((ret = open_grant_tables(thd, tables, &transactional_tables,
+                                 WSREP_MYSQL_DB, "user"))) {
+      thd->set_query(query_save);
+      thd->wsrep_exec_mode = LOCAL_STATE;
+      return (ret != 1);
+    }
+  } else {
+    if ((ret = open_grant_tables(thd, tables, &transactional_tables)))
+      return (ret != 1);
+  }
+#else
   if ((ret = open_grant_tables(thd, tables, &transactional_tables)))
     return ret != 1;
+#endif /* WITH_WSREP */
 
   { /* Critical section */
 
@@ -1567,6 +1598,14 @@ bool change_password(THD *thd, LEX_USER *lex_user, const char *new_password,
     user_list.push_back(lex_user);
     acl_notify_htons(thd, SQLCOM_SET_PASSWORD, &user_list);
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && !thd->wsrep_applier) {
+    WSREP_TO_ISOLATION_END
+    thd->set_query(query_save);
+    thd->wsrep_exec_mode = LOCAL_STATE;
+  }
+#endif /* WITH_WSREP */
 
   return result || commit_result;
 }
@@ -2481,12 +2520,28 @@ bool mysql_rename_user(THD *thd, List<LEX_USER> &list) {
     while ((tmp_user_from = user_list++)) {
       if (!(user_from = get_current_user(thd, tmp_user_from))) {
         result = 1;
+#ifdef WITH_WSREP
+        /* if operation to get current_user fails there is no point
+        in continuing further to scan for rename-to user.
+        Also, the while logic will cause rename-to user to appear NULL.*/
+        commit_and_close_mysql_tables(thd);
+        return true;
+#else
         continue;
+#endif /* WITH_WSREP */
       }
       tmp_user_to = user_list++;
       if (!(user_to = get_current_user(thd, tmp_user_to))) {
         result = 1;
+#ifdef WITH_WSREP
+        /* if operation to get current_user fails there is no point
+        in continuing further to scan for rename-to user.
+        Also, the while logic will cause rename-to user to appear NULL.*/
+        commit_and_close_mysql_tables(thd);
+        return true;
+#else
         continue;
+#endif /* WITH_WSREP */
       }
       DBUG_ASSERT(user_to != 0); /* Syntax enforces pairs of users. */
 

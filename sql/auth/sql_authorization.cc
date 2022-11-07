@@ -1985,6 +1985,11 @@ bool check_readonly(THD *thd, bool err_if_readonly) {
   */
   if (thd->slave_thread || thd->is_cmd_skip_readonly()) return false;
 
+#ifdef WITH_WSREP
+  /* Ignore readonly for background wsrep applier */
+  if (WSREP(thd) && thd->wsrep_applier) return false;
+#endif /* WITH_WSREP */
+
   Security_context *sctx = thd->security_context();
   bool is_super =
       sctx->check_access(SUPER_ACL) ||

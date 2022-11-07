@@ -85,6 +85,10 @@
 #include "sql/tztime.h"  // Time_zone
 #include "sql_string.h"  // String
 
+#ifdef WITH_WSREP
+#include "sql/sql_parse.h"
+#endif /* WITH_WSREP */
+
 /**
   @addtogroup Event_Scheduler
   @{
@@ -358,6 +362,13 @@ bool Events::create_event(THD *thd, Event_parse_data *parse_data,
     return true;
 
   if (parse_data->do_not_create) return false;
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL)) {
+    return true;
+  }
+#endif /* WITH_WSREP */
+
   /*
     Turn off row binlogging of this statement and use statement-based
     so that all supporting tables are updated for CREATE EVENT command.
@@ -514,6 +525,12 @@ bool Events::update_event(THD *thd, Event_parse_data *parse_data,
       return true;
   }
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL)) {
+    DBUG_RETURN(true);
+  }
+#endif /* WITH_WSREP */
+
   /*
     Turn off row binlogging of this statement and use statement-based
     so that all supporting tables are updated for CREATE EVENT command.
@@ -632,6 +649,12 @@ bool Events::drop_event(THD *thd, LEX_CSTRING dbname, LEX_CSTRING name,
 
   // Acquire exclusive MDL lock.
   if (lock_object_name(thd, MDL_key::EVENT, dbname.str, name.str)) return true;
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL)) {
+    DBUG_RETURN(true);
+  }
+#endif /* WITH_WSREP */
 
   DEBUG_SYNC(thd, "after_acquiring_exclusive_lock_on_the_event");
 
@@ -1154,6 +1177,49 @@ static bool load_events_from_db(THD *thd, Event_queue *event_queue) {
         LogErr(ERROR_LEVEL, ER_EVENT_SCHEDULER_GOT_BAD_DATA_FROM_TABLE);
         return true;
       }
+
+#ifdef WITH_WSREP
+      /**
+        If SST is done from a galera node (DONOR) that is also acting as MASTER,
+        the newly synced node (JOINER) in galera eco-system will also copy-over
+        the event state enabling duplicate event in galera eco-system.
+        DISABLE such events if the current node is not event orginator.
+        (Also, make sure you skip disabling it if is already disabled to avoid
+         creation of redundant action)
+        NOTE: This complete system relies on server-id. Ideally
+        server-id should be same for all nodes of galera eco-system but they
+        aren't same. Infact, based on galera use-case it seems like it
+        recommends to have each node with different server-id.
+      */
+      if (et->m_originator != thd->server_id) {
+        WSREP_DEBUG("Disabling non-native event (name: %s)",
+                    et->m_event_name.str);
+
+        if (et->m_status == Event_parse_data::SLAVESIDE_DISABLED) continue;
+
+        if (lock_object_name(thd, MDL_key::EVENT, et->m_schema_name.str,
+                             et->m_event_name.str)) {
+          // TODO: add error message
+          return true;
+        }
+
+        ulong saved_master_access;
+        saved_master_access = thd->security_context()->master_access();
+        thd->security_context()->set_master_access(saved_master_access |
+                                                   SUPER_ACL);
+
+        (void)Event_db_repository::update_timing_fields_for_event(
+            thd, et->m_schema_name, et->m_event_name, et->m_last_executed,
+            Event_parse_data::SLAVESIDE_DISABLED);
+
+        thd->mdl_context.release_transactional_locks();
+
+        thd->security_context()->set_master_access(saved_master_access);
+
+        continue;
+      }
+#endif /* WITH_WSREP */
+
       bool drop_event = et->m_dropped;  // create_event may free et.
       bool created = false;
       if (event_queue->create_event(thd, et.get(), &created)) {
@@ -1208,6 +1274,46 @@ static bool load_events_from_db(THD *thd, Event_queue *event_queue) {
   thd->mdl_context.release_transactional_locks();
   return error;
 }
+
+#ifdef WITH_WSREP
+int wsrep_create_event_query(THD *thd, uchar **buf, size_t *buf_len) {
+  String log_query;
+
+  if (create_query_string(thd, &log_query)) {
+    WSREP_WARN("events create string failed: schema: %s, query: %s",
+               (thd->db().str ? thd->db().str : "(null)"), WSREP_QUERY(thd));
+    return 1;
+  }
+  return wsrep_to_buf_helper(thd, log_query.ptr(), log_query.length(), buf,
+                             buf_len);
+}
+
+static int wsrep_alter_query_string(THD *thd, String *buf) {
+  /* Append the "ALTER" part of the query */
+  if (buf->append(STRING_WITH_LEN("ALTER "))) return 1;
+  /* Append definer */
+  append_definer(thd, buf, thd->lex->definer->user, thd->lex->definer->host);
+  /* Append the left part of thd->query after event name part */
+  if (buf->append(
+          thd->lex->stmt_definition_begin,
+          thd->lex->stmt_definition_end - thd->lex->stmt_definition_begin))
+    return 1;
+
+  return 0;
+}
+
+int wsrep_alter_event_query(THD *thd, uchar **buf, size_t *buf_len) {
+  String log_query;
+
+  if (wsrep_alter_query_string(thd, &log_query)) {
+    WSREP_WARN("events alter string failed: schema: %s, query: %s",
+               (thd->db().str ? thd->db().str : "(null)"), WSREP_QUERY(thd));
+    return 1;
+  }
+  return wsrep_to_buf_helper(thd, log_query.ptr(), log_query.length(), buf,
+                             buf_len);
+}
+#endif /* WITH_WSREP */
 
 /**
   @} (End of group Event_Scheduler)
