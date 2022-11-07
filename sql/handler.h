@@ -147,6 +147,9 @@ st_plugin_int *remove_hton2plugin(uint slot);
 
 extern const char *ha_row_type[];
 extern const char *tx_isolation_names[];
+#ifdef WITH_WSREP
+extern MYSQL_PLUGIN_IMPORT const char *wsrep_binlog_format_names[];
+#endif /* WITH_WSREP */
 extern const char *binlog_format_names[];
 extern TYPELIB tx_isolation_typelib;
 extern ulong total_ha_2pc;
@@ -652,6 +655,7 @@ enum legacy_db_type {
   /** Performance schema engine. */
   DB_TYPE_PERFORMANCE_SCHEMA,
   DB_TYPE_TEMPTABLE,
+  DB_TYPE_WSREP,
   DB_TYPE_TOKUDB = 41,
   DB_TYPE_ROCKSDB = 42,
   DB_TYPE_FIRST_DYNAMIC = 43,
@@ -1493,6 +1497,15 @@ typedef int (*make_pushed_join_t)(handlerton *hton, THD *thd,
 typedef bool (*is_supported_system_table_t)(const char *db,
                                             const char *table_name,
                                             bool is_sql_layer_system_table);
+
+#ifdef WITH_WSREP
+// TODO: documentation
+using wsrep_abort_transaction_t = int (*)(handlerton *hton, THD *bf_thd,
+                                          THD *victim_thd, bool signal);
+using wsrep_set_checkpoint_t = int (*)(handlerton *hton, const XID *xid);
+using wsrep_get_checkpoint_t = int (*)(handlerton *hton, XID *xid);
+using wsrep_fake_trx_id_t = void (*)(handlerton *hton, THD *thd);
+#endif /* WITH_WSREP */
 
 /**
   Create SDI in a tablespace. This API should be used when upgrading
@@ -2357,6 +2370,12 @@ struct handlerton {
   table_exists_in_engine_t table_exists_in_engine;
   make_pushed_join_t make_pushed_join;
   is_supported_system_table_t is_supported_system_table;
+#ifdef WITH_WSREP
+  wsrep_abort_transaction_t wsrep_abort_transaction;
+  wsrep_set_checkpoint_t wsrep_set_checkpoint;
+  wsrep_get_checkpoint_t wsrep_get_checkpoint;
+  wsrep_fake_trx_id_t wsrep_fake_trx_id;
+#endif /* WITH_WSREP */
 
   /*
     APIs for retrieving Serialized Dictionary Information by tablespace id
@@ -6883,6 +6902,11 @@ int ha_rollback_to_savepoint(THD *thd, SAVEPOINT *sv);
 bool ha_rollback_to_savepoint_can_release_mdl(THD *thd);
 int ha_savepoint(THD *thd, SAVEPOINT *sv);
 int ha_release_savepoint(THD *thd, SAVEPOINT *sv);
+
+#ifdef WITH_WSREP
+int ha_wsrep_abort_transaction(THD *bf_thd, THD *victim_thd, bool signal);
+void ha_wsrep_fake_trx_id(THD *thd);
+#endif /* WITH_WSREP */
 
 /* Build pushed joins in handlers implementing this feature */
 int ha_make_pushed_joins(THD *thd, const AQP::Join_plan *plan);

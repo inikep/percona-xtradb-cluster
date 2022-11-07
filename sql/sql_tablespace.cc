@@ -64,6 +64,10 @@
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"  // trans_commit_stmt
 
+#ifdef WITH_WSREP
+#include "sql/sql_parse.h"
+#endif /* WITH_WSREP */
+
 namespace {
 
 template <typename LEXSTR>
@@ -440,6 +444,11 @@ bool Sql_cmd_create_tablespace::execute(THD *thd) {
     return true;
   }
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
+
   handlerton *hton = nullptr;
   if (get_stmt_hton(thd, m_options->engine_name, m_tablespace_name.str,
                     "CREATE TABLESPACE", &hton)) {
@@ -620,6 +629,11 @@ bool Sql_cmd_drop_tablespace::execute(THD *thd) {
   if (check_global_access(thd, CREATE_TABLESPACE_ACL)) {
     return true;
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
 
   if (lock_tablespace_names(thd, m_tablespace_name)) {
     return true;
@@ -977,6 +991,11 @@ bool Sql_cmd_alter_tablespace_add_datafile::execute(THD *thd) {
     return true;
   }
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
+
   if (lock_tablespace_names(thd, m_tablespace_name)) {
     return true;
   }
@@ -1068,6 +1087,11 @@ bool Sql_cmd_alter_tablespace_drop_datafile::execute(THD *thd) {
     return true;
   }
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
+
   if (lock_tablespace_names(thd, m_tablespace_name)) {
     return true;
   }
@@ -1150,6 +1174,11 @@ bool Sql_cmd_alter_tablespace_rename::execute(THD *thd) {
   if (check_global_access(thd, CREATE_TABLESPACE_ACL)) {
     return true;
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
 
   // Can't check the name in SE, yet. Need to acquire Tablespace
   // object first, so that we can get the engine name.
@@ -1640,6 +1669,11 @@ bool Sql_cmd_logfile_group::execute(THD *thd) {
   if (check_global_access(thd, CREATE_TABLESPACE_ACL)) {
     return true;
   }
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && wsrep_to_isolation_begin(thd, WSREP_MYSQL_DB, NULL, NULL))
+    return true;
+#endif /* WITH_WSREP */
 
   handlerton *hton = nullptr;
   if (get_stmt_hton(thd, m_options->engine_name, m_logfile_group_name.str,

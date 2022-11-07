@@ -155,6 +155,20 @@ struct Binlog_user_var_event;
 struct LOG_INFO;
 class Check_constraints_adjusted_names_map;
 
+#ifdef WITH_WSREP
+#include "wsrep_mysqld.h"
+struct wsrep_thd_shadow {
+  ulonglong options;
+  uint server_status;
+  enum wsrep_exec_mode wsrep_exec_mode;
+  Vio *vio;
+  ulong tx_isolation;
+  LEX_CSTRING db;
+  struct timeval user_time;
+  longlong row_count_func;
+};
+#endif /* WITH_WSREP */
+
 extern bool opt_log_slow_admin_statements;
 extern ulong opt_log_slow_sp_statements;
 
@@ -785,10 +799,19 @@ class Global_read_lock {
 
   Global_read_lock()
       : m_state(GRL_NONE),
+#ifdef WITH_WSREP
+        provider_paused(false),
+        provider_desynced_paused(false),
+#endif /* WITH_WSREP */
         m_mdl_global_shared_lock(NULL),
         m_mdl_blocks_commits_lock(NULL) {}
 
+#ifdef WITH_WSREP
+  bool lock_global_read_lock(THD *thd, bool *own_lock);
+#else
   bool lock_global_read_lock(THD *thd);
+#endif /* WITH_WSREP */
+
   void unlock_global_read_lock(THD *thd);
 
   /**
@@ -809,12 +832,33 @@ class Global_read_lock {
     return false;
   }
   bool make_global_read_lock_block_commit(THD *thd);
+
+#ifdef WITH_WSREP
+  bool wsrep_pause(void);
+  wsrep_status_t wsrep_resume(void);
+  bool wsrep_pause_once(bool *already_paused);
+  wsrep_status_t wsrep_resume_once(void);
+  bool provider_resumed() const { return !provider_paused; }
+  void pause_provider(bool val) { provider_paused = val; }
+#endif /* WITH_WSREP */
+
   bool is_acquired() const { return m_state != GRL_NONE; }
   void set_explicit_lock_duration(THD *thd);
 
  private:
   static std::atomic<int32> m_atomic_active_requests;
   enum_grl_state m_state;
+
+#ifdef WITH_WSREP
+  /* FLUSH TABLE <table> WITH READ LOCK
+  FLUSH TABLES <table> FOR EXPORT
+  and so while unlocking such context provider needs to resumed. */
+  bool provider_paused;
+
+  /* Mark this true only when both action are successful. */
+  bool provider_desynced_paused;
+#endif /* WITH_WSREP */
+
   /**
     In order to acquire the global read lock, the connection must
     acquire shared metadata lock in GLOBAL namespace, to prohibit
@@ -2734,6 +2778,114 @@ class THD : public MDL_context_owner,
     query_id_t first_query_id;
   } binlog_evt_union;
 
+#ifdef WITH_WSREP
+  const bool wsrep_applier;   /* dedicated slave applier thread */
+  bool wsrep_applier_closing; /* applier marked to close */
+  bool wsrep_client_thread;   /* to identify client threads*/
+  enum wsrep_exec_mode wsrep_exec_mode;
+  query_id_t wsrep_last_query_id;
+  enum wsrep_query_state wsrep_query_state;
+  enum wsrep_conflict_state wsrep_conflict_state;
+  mysql_mutex_t LOCK_wsrep_thd;
+  mysql_cond_t COND_wsrep_thd;
+  // changed from wsrep_seqno_t to wsrep_trx_meta_t in wsrep API rev 75
+  // wsrep_seqno_t             wsrep_trx_seqno;
+  wsrep_trx_meta_t wsrep_trx_meta;
+  uint32 wsrep_rand;
+  Relay_log_info *wsrep_rli;
+  wsrep_ws_handle_t wsrep_ws_handle;
+  /* PROCESSLIST_STATE is declared as VARCHAR(64) so limit the buffer */
+  char wsrep_info[64];        /* string for dynamic proc info */
+  ulong wsrep_retry_counter;  // of autocommit
+  bool wsrep_PA_safe;
+  char *wsrep_retry_query;
+  size_t wsrep_retry_query_len;
+  enum enum_server_command wsrep_retry_command;
+  enum wsrep_consistency_check_mode wsrep_consistency_check;
+  wsrep_stats_var *wsrep_status_vars;
+  int wsrep_mysql_replicated;
+
+  const char *wsrep_TOI_pre_query; /* a query to apply before
+                                      the actual TOI query */
+  size_t wsrep_TOI_pre_query_len;
+
+  wsrep_po_handle_t wsrep_po_handle;
+  size_t wsrep_po_cnt;
+  bool wsrep_po_in_trans;
+  rpl_sid wsrep_po_sid;
+  void *wsrep_apply_format;
+  bool wsrep_apply_toi; /* applier processing in TOI */
+  wsrep_gtid_t wsrep_sync_wait_gtid;
+  ulong wsrep_affected_rows;
+  bool wsrep_sst_donor;
+  bool wsrep_void_applier_trx;
+  void *wsrep_gtid_event_buf;
+  ulong wsrep_gtid_event_buf_len;
+  bool wsrep_replicate_GTID;
+  bool wsrep_skip_wsrep_GTID;
+
+  /* DDL statement can fail in which case SE checkpoint shouldn't get updated.
+   */
+  bool wsrep_skip_SE_checkpoint;
+
+  /* DDL statement. skip registering wsrep_hton handler.
+  This is normally blocked by checking wsrep_exec_state != TOTAL_ORDER
+  but if sql_log_bin = 0 then the state is not set and DDL should is expected
+  not be replicated. This variable helps identify situation like these. */
+  bool wsrep_skip_wsrep_hton;
+
+  /* This field is set when wsrep try to do an intermediate special
+  commit while processing LOAD DATA INFILE statement by breaking it
+  into 10K rows mini transactions.
+
+  If this variable is set then binlog rotation is not performed
+  while mini transaction try to commit. Why ?
+  a. From logical perspective LDI is still a single transaction
+  b. rotation will cause unregistration of binlog/innodb handler.
+     On resuming the flow binlog handler is re-register but innodb
+     isn't this eventually causes replication of last chunk (< 10K)
+     rows to skip. Infact, this is logical issue that exist in
+     MySQL/InnoDB world but it just work for them as InnoDB
+     then commit the said transaction as part of external_lock(UNLOCK). */
+  bool wsrep_split_trx;
+
+  /*
+    Transaction id:
+    * m_next_wsrep_trx_id is assigned on the first query after
+      wsrep_next_trx_id() return WSREP_UNDEFINED_TRX_ID
+    * Each storage engine must assign value of wsrep_next_trx_id()
+      via wsrep_ws_handle_for_trx() when the transaction starts.
+    * Effective transaction id is returned via wsrep_trx_id()
+   */
+
+  /*
+    Return effective transaction id
+   */
+  wsrep_trx_id_t wsrep_trx_id() const { return wsrep_ws_handle.trx_id; }
+
+  /*
+    Set next trx id
+   */
+  void set_wsrep_next_trx_id(query_id_t query_id) {
+    DBUG_ASSERT(wsrep_ws_handle.trx_id == WSREP_UNDEFINED_TRX_ID);
+    m_wsrep_next_trx_id = (wsrep_trx_id_t)query_id;
+  }
+
+  /*
+    Return next trx id
+   */
+  wsrep_trx_id_t wsrep_next_trx_id() const { return m_wsrep_next_trx_id; }
+
+ private:
+  /* Imagine this be a query-id that is assigned to all statements
+  including non-replicating statement like SELECT/SET.
+
+  For data-changing DML statement wsrep_ws_handle trx_id is set
+  to real-transaction-id. */
+  wsrep_trx_id_t m_wsrep_next_trx_id; /* cast from query_id_t */
+ public:
+#endif /* WITH_WSREP */
+
   /**
     Internal parser state.
     Note that since the parser is not re-entrant, we keep only one parser
@@ -2765,7 +2917,11 @@ class THD : public MDL_context_owner,
   // We don't want to load/unload plugins for unit tests.
   bool m_enable_plugins;
 
+#ifdef WITH_WSREP
+  explicit THD(bool enable_plugins = true, bool is_applier = false);
+#else
   explicit THD(bool enable_plugins = true);
+#endif /* WITH_WSREP */
 
   /*
     The THD dtor is effectively split in two:
@@ -2857,6 +3013,9 @@ class THD : public MDL_context_owner,
 
   void shutdown_active_vio();
   void awake(THD::killed_state state_to_set);
+#ifdef WITH_WSREP
+  void awake(void);
+#endif /* WITH_WSREP */
 
   /** Disconnect the associated communication endpoint. */
   void disconnect(bool server_shutdown = false);
@@ -3985,10 +4144,23 @@ class THD : public MDL_context_owner,
     Assign a new value to thd->query_id.
     Protected with the LOCK_thd_data mutex.
   */
+#ifdef WITH_WSREP
+  void set_query_id(query_id_t new_query_id, bool update_wsrep_id = true) {
+#else
   void set_query_id(query_id_t new_query_id) {
+#endif /* WITH_WSREP */
     mysql_mutex_lock(&LOCK_thd_data);
     query_id = new_query_id;
     mysql_mutex_unlock(&LOCK_thd_data);
+#ifdef WITH_WSREP
+    if (WSREP(this) && wsrep_next_trx_id() == WSREP_UNDEFINED_TRX_ID &&
+        update_wsrep_id) {
+      set_wsrep_next_trx_id(query_id);
+      // TODO: re-add this debug statement
+      // WSREP_DEBUG("set_query_id(), assigned new next trx id: %lu",
+      //            (long unsigned int)wsrep_next_trx_id());
+    }
+#endif /* WITH_WSREP */
     MYSQL_SET_STATEMENT_QUERY_ID(m_statement_psi, new_query_id);
   }
 

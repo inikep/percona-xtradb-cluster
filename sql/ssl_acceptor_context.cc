@@ -52,6 +52,10 @@ static PolyLock_mutex lock_ssl_ctx(&LOCK_tls_ctx_options);
 
 SslAcceptorContext::SslAcceptorContextLockType *SslAcceptorContext::lock = NULL;
 
+#ifdef WITH_WSREP
+bool SslAcceptorContext::wsrep_context_initialized = false;
+#endif /* WITH_WSREP */
+
 void SslAcceptorContext::singleton_deinit() {
   if (lock) delete lock;
 }
@@ -445,12 +449,57 @@ int SslAcceptorContext::show_ssl_get_ssl_crlpath(THD *, SHOW_VAR *var,
   return 0;
 }
 
+#ifdef WITH_WSREP
+bool SslAcceptorContext::wsrep_ssl_artifacts_check(bool bootstrapping_node) {
+
+  if (!WSREP_ON) {
+    /* No-op if node is running in non-cluster mode. */
+    return false;
+  }
+
+  ssl_artifacts_status auto_detection_status =
+      SslAcceptorContext::auto_detect_ssl();
+
+  if (auto_detection_status == SSL_ARTIFACTS_AUTO_DETECTED)
+    LogErr(INFORMATION_LEVEL, ER_SSL_TRYING_DATADIR_DEFAULTS,
+           DEFAULT_SSL_CA_CERT, DEFAULT_SSL_SERVER_CERT,
+           DEFAULT_SSL_SERVER_KEY);
+
+  /* Generate certs automatically only when bootstrapping
+  to avoid cases where starting up creates incompatible certs */
+  if (bootstrapping_node) {
+    if (do_auto_cert_generation(auto_detection_status, &opt_ssl_ca,
+                                &opt_ssl_key, &opt_ssl_cert) == false)
+      return true;
+  } else if (!bootstrapping_node &&
+             auto_detection_status != SSL_ARTIFACTS_AUTO_DETECTED) {
+    WSREP_ERROR("New cluster joining node didn't found needed SSL artifacts");
+    return true;
+  } else if (!bootstrapping_node &&
+             auto_detection_status == SSL_ARTIFACTS_AUTO_DETECTED) {
+    WSREP_INFO("New cluster joining node found needed SSL artifacts");
+  }
+
+  wsrep_context_initialized = true;
+
+  return false;
+}
+
+void SslAcceptorContext::populate_wsrep_ssl_options(char *buff,
+                                                    unsigned int sz) {
+  memset(buff, 0, sz);
+  snprintf(buff, sz, "socket.ssl_key=%s;socket.ssl_ca=%s;socket.ssl_cert=%s",
+           opt_ssl_key, opt_ssl_ca, opt_ssl_cert);
+}
+#endif /* WITH_WSREP */
+
 bool SslAcceptorContext::have_ssl() {
   AutoLock c;
   return !c.empty();
 }
 
 bool SslAcceptorContext::singleton_init(bool use_ssl_arg) {
+
   ssl_artifacts_status auto_detection_status;
 
   /* turn certain options off for wolf */

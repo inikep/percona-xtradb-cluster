@@ -34,6 +34,10 @@
 
 #include "my_config.h"
 
+#ifdef WITH_WSREP
+#include "wsrep_mysqld.h"
+#endif /* WITH_WSREP */
+
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -172,6 +176,9 @@ char slave_skip_error_names[SHOW_VAR_FUNC_BUFF_SIZE];
 char *slave_load_tmpdir = 0;
 bool replicate_same_server_id;
 ulonglong relay_log_space_limit = 0;
+#ifdef WITH_WSREP
+Master_info *active_mi = 0;
+#endif /* WITH_WSREP */
 
 const char *relay_log_index = 0;
 const char *relay_log_basename = 0;
@@ -309,6 +316,11 @@ static void set_thd_tx_priority(THD *thd, int priority) {
   DBUG_ASSERT(thd->system_thread == SYSTEM_THREAD_SLAVE_SQL ||
               thd->system_thread == SYSTEM_THREAD_SLAVE_WORKER);
 
+#ifdef WITH_WSREP
+  if (priority > 0)
+    WSREP_WARN("InnoDB High Priority being used for slave: %d -> %d",
+               thd->thd_tx_priority, priority);
+#endif /* WITH_WSREP */
   thd->thd_tx_priority = priority;
   DBUG_EXECUTE_IF("dbug_set_high_prio_sql_thread",
                   { thd->thd_tx_priority = 1; });
@@ -466,6 +478,13 @@ int init_slave() {
            &channel_map)))
     LogErr(ERROR_LEVEL,
            ER_RPL_SLAVE_FAILED_TO_CREATE_OR_RECOVER_INFO_REPOSITORIES);
+
+#ifdef WITH_WSREP
+  /*
+     for only wsrep, create active_mi, for async slave restart purpose
+   */
+  active_mi = channel_map.get_default_channel_mi();
+#endif /* WITH_WSREP */
 
 #ifndef DBUG_OFF
   /* @todo: Print it for all the channels */
@@ -687,6 +706,19 @@ bool start_slave_cmd(THD *thd) {
     my_error(ER_SLAVE_CONFIGURATION, MYF(0));
     goto err;
   }
+#ifdef WITH_WSREP
+  if (WSREP_ON && !opt_log_slave_updates) {
+    /*
+       bad configuration, mysql replication would not be forwarded to wsrep
+       cluster which would lead to immediate inconsistency
+    */
+    my_message(ER_SLAVE_CONFIGURATION,
+               "bad configuration no log_slave_updates"
+               " defined, slave would not replicate further to wsrep cluster",
+               MYF(0));
+    goto err;
+  }
+#endif /* WITH_WSREP */
 
   if (!lex->mi.for_channel) {
     /*
@@ -1894,6 +1926,19 @@ bool start_slave_threads(bool need_lock_slave, bool wait_for_start,
              mi->get_for_channel_str());
     DBUG_RETURN(true);
   }
+#ifdef WITH_WSREP
+  if (WSREP_ON && !opt_log_slave_updates) {
+    /*
+       bad configuration, mysql replication would not be forwarded to wsrep
+       cluster which would lead to immediate inconsistency
+    */
+    WSREP_WARN("Cannot start MySQL slave, when log_slave_updates is not set");
+    my_error(ER_SLAVE_CONFIGURATION, MYF(0),
+             "bad configuration no log_slave_updates defined, slave would not"
+             " replicate further to wsrep cluster");
+    DBUG_RETURN(true);
+  }
+#endif /* WITH_WSREP */
 
   if (need_lock_slave) {
     lock_io = &mi->run_lock;
@@ -2196,6 +2241,10 @@ const char *print_slave_db_safe(const char *db) {
 */
 
 static bool is_network_error(uint errorno) {
+#ifdef WITH_WSREP
+  if (errorno == ER_UNKNOWN_COM_ERROR) return true;
+#endif /* WITH_WSREP */
+
   return errorno == CR_CONNECTION_ERROR || errorno == CR_CONN_HOST_ERROR ||
          errorno == CR_SERVER_GONE_ERROR || errorno == CR_SERVER_LOST ||
          errorno == ER_CON_COUNT_ERROR || errorno == ER_SERVER_SHUTDOWN ||
@@ -4322,6 +4371,17 @@ apply_event_and_update_pos(Log_event **ptr_ev, THD *thd, Relay_log_info *rli) {
 
     exec_res = ev->apply_event(rli);
 
+#ifdef WITH_WSREP
+    if (exec_res && thd->wsrep_conflict_state != NO_CONFLICT) {
+      WSREP_DEBUG("Apply Event failed (Reason: %d, Conflict-State: %s)",
+                  exec_res,
+                  wsrep_get_conflict_state(thd->wsrep_conflict_state));
+      rli->abort_slave = 1;
+      rli->report(ERROR_LEVEL, ER_UNKNOWN_COM_ERROR,
+                  "Node has dropped from cluster");
+    }
+#endif /* WITH_WSREP */
+
     DBUG_EXECUTE_IF("simulate_stop_when_mts_in_group",
                     if (rli->mts_group_status == Relay_log_info::MTS_IN_GROUP &&
                         rli->curr_group_seen_begin)
@@ -4873,6 +4933,12 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
       DBUG_RETURN(1);
     }
 
+#ifdef WITH_WSREP
+    mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+    if (thd->wsrep_conflict_state == NO_CONFLICT) {
+      mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+#endif /* WITH_WSREP */
+
     if (slave_trans_retries) {
       int temp_err = 0;
       bool silent = false;
@@ -4979,6 +5045,12 @@ static int exec_relay_log_event(THD *thd, Relay_log_info *rli,
                             rli->trans_retries));
       }
     }
+#ifdef WITH_WSREP
+    } else {
+      mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+    }
+#endif /* WITH_WSREP */
+
     if (exec_res) {
       delete ev;
       /* Raii object is explicitly updated 'cos this branch doesn't end func */
@@ -6705,6 +6777,9 @@ extern "C" void *handle_slave_sql(void *arg) {
   my_off_t saved_log_pos = 0;
   my_off_t saved_master_log_pos = 0;
   my_off_t saved_skip = 0;
+#ifdef WITH_WSREP
+  bool wsrep_node_dropped = false;
+#endif /* WITH_WSREP */
 
   Relay_log_info *rli = ((Master_info *)arg)->rli;
   const char *errmsg;
@@ -6717,6 +6792,9 @@ extern "C" void *handle_slave_sql(void *arg) {
   // needs to call my_thread_init(), otherwise we get a coredump in DBUG_ stuff
   my_thread_init();
   DBUG_ENTER("handle_slave_sql");
+#ifdef WITH_WSREP
+wsrep_restart_point:
+#endif /* WITH_WSREP */
 
   DBUG_ASSERT(rli->inited);
   mysql_mutex_lock(&rli->run_lock);
@@ -6882,6 +6960,18 @@ extern "C" void *handle_slave_sql(void *arg) {
   THD_CHECK_SENTRY(thd);
   DBUG_ASSERT(rli->info_thd == thd);
 
+#ifdef WITH_WSREP
+  thd->wsrep_exec_mode = LOCAL_STATE;
+  /* synchronize with wsrep replication */
+  if (WSREP_ON) {
+    thd->wsrep_po_handle = WSREP_PO_INITIALIZER;
+    thd->wsrep_po_cnt = 0;
+    thd->wsrep_po_in_trans = false;
+    memset(&thd->wsrep_po_sid, 0, sizeof(thd->wsrep_po_sid));
+    wsrep_ready_wait();
+  }
+#endif /* WITH_WSREP */
+
   DBUG_PRINT("master_info", ("log_file_name: %s  position: %s",
                              rli->get_group_master_log_name(),
                              llstr(rli->get_group_master_log_pos(), llbuff)));
@@ -6948,6 +7038,14 @@ extern "C" void *handle_slave_sql(void *arg) {
     }
 
     if (exec_relay_log_event(thd, rli, &applier_reader)) {
+
+#ifdef WITH_WSREP
+      if (thd->wsrep_conflict_state != NO_CONFLICT) {
+        wsrep_node_dropped = 1;
+        rli->abort_slave = 1;
+      }
+#endif /* WITH_WSREP */
+
       DBUG_PRINT("info", ("exec_relay_log_event() failed"));
 
       // do not scare the user if SQL thread was simply killed or stopped
@@ -6979,6 +7077,14 @@ err:
   rli->current_mts_submode = 0;
   rli->clear_mts_recovery_groups();
 
+#ifdef WITH_WSREP
+  if (WSREP_ON) {
+    if (wsrep->preordered_commit(wsrep, &thd->wsrep_po_handle, NULL, 0, 0,
+                                 false)) {
+      WSREP_WARN("preordered cleanup failed");
+    }
+  }
+#endif /* WITH_WSREP */
   /*
     Some events set some playgrounds, which won't be cleared because thread
     stops. Stopping of this thread may not be known to these events ("stop"
@@ -7067,6 +7173,31 @@ err:
     to NULL.
   */
   delete thd;
+
+#ifdef WITH_WSREP
+  /* if slave stopped due to node going non primary, we set global flag to
+     trigger automatic restart of slave when node joins back to cluster
+  */
+  if (wsrep_node_dropped && wsrep_restart_slave) {
+    if (wsrep_ready_get()) {
+      WSREP_INFO(
+          "Slave error due to node temporarily went non-primary"
+          "SQL slave will continue");
+      wsrep_node_dropped = false;
+      mysql_mutex_unlock(&rli->run_lock);
+      WSREP_INFO("Restarting Slave (conflict-state: %s)",
+                 wsrep_get_conflict_state(thd->wsrep_conflict_state));
+      thd->wsrep_conflict_state = NO_CONFLICT;
+      goto wsrep_restart_point;
+    } else {
+      WSREP_INFO("Slave error due to node going non-primary");
+      WSREP_INFO(
+          "wsrep_restart_slave is set. Slave will automatically"
+          " restart when node joins back the cluster");
+      wsrep_restart_slave_activated = true;
+    }
+  }
+#endif /* WITH_WSREP */
 
   /*
    Note: the order of the broadcast and unlock calls below (first broadcast,

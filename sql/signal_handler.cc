@@ -40,6 +40,10 @@
 #include "sql/sql_class.h"
 #include "sql/sql_const.h"
 
+#ifdef WITH_WSREP
+#include "wsrep_mysqld.h"
+#endif /* WITH_WSREP */
+
 #ifdef _WIN32
 #include <crtdbg.h>
 
@@ -78,6 +82,14 @@ extern "C" void handle_fatal_signal(int sig) {
   }
 
   segfaulted = 1;
+
+/*
+  The wsrep subsystem has their its own actions
+  which need be performed before exiting:
+*/
+#ifdef WITH_WSREP
+  wsrep_handle_fatal_signal(sig);
+#endif /* WITH_WSREP */
 
 #ifdef _WIN32
   SYSTEMTIME utc_time;
@@ -157,10 +169,8 @@ extern "C" void handle_fatal_signal(int sig) {
   }
   my_safe_printf_stderr(
       "%s",
-      "Please help us make Percona Server better by reporting any\n"
-      "bugs at https://bugs.percona.com/\n\n"
-      "You may download the Percona Server operations manual by visiting\n"
-      "http://www.percona.com/software/percona-server/. You may find "
+      "You may download the Percona XtraDB Cluster operations manual by visiting\n"
+      "http://www.percona.com/software/percona-xtradb-cluster/. You may find "
       "information\n"
       "in the manual which will help you identify the cause of the crash.\n");
 
