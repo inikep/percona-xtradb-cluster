@@ -120,6 +120,11 @@ OPTION(WITH_PAM "Build with Percona PAM plugin" OFF)
 # where WITH_DEBUG is  reset from ON to OFF  and here we need to reset 
 # CMAKE_BUILD_TYPE to either none or default RelWithDebInfo
 
+# ---- WSREP
+# TokuDB is not supported currently in PXC
+OPTION(WITHOUT_TOKUDB "Build without TokuDB plugin and tools" ON)
+# ---- WSREP
+
 SET(BUILDTYPE_DOCSTRING
  "Choose the type of build, options are: None(CMAKE_CXX_FLAGS or
  CMAKE_C_FLAGS used) Debug Release RelWithDebInfo MinSizeRel")
@@ -403,6 +408,9 @@ ENDIF()
 INCLUDE(CMakePushCheckState)
 
 # Add macros
+#---- WSREP
+INCLUDE(wsrep)
+#---- WSREP
 INCLUDE(character_sets)
 INCLUDE(cpu_info)
 INCLUDE(zlib)
@@ -728,10 +736,16 @@ IF(NOT CMAKE_BUILD_TYPE
 ENDIF()
 
 # Add safemutex for debug configurations
+# PS-enabled SAFE_MUTEX (starting from 5.7.22) but PXC can't enable it.
+# PXC in 5.7 introduced PFS for some of the instruments that in galera
+# library but not for all since tracking of them is big overhead
+# with multiple layer callback involved.
+# SAFE_MUTEX should be enabled for all instrument or none.
+# Since PXC cause is mix-match latter become true for PXC.
 # Enable debug sync for debug builds.
 FOREACH(LANG C CXX)
   STRING_PREPEND(CMAKE_${LANG}_FLAGS_DEBUG "-DENABLED_DEBUG_SYNC ")
-  STRING_PREPEND(CMAKE_${LANG}_FLAGS_DEBUG "-DSAFE_MUTEX ")
+#  STRING_PREPEND(CMAKE_${LANG}_FLAGS_DEBUG "-DSAFE_MUTEX ")
 ENDFOREACH()
 
 
@@ -1022,6 +1036,11 @@ ADD_SUBDIRECTORY(extra/regex)
 ADD_SUBDIRECTORY(libmysql)
 ADD_SUBDIRECTORY(libbinlogevents)
 ADD_SUBDIRECTORY(libbinlogstandalone)
+#---- WITH_WSREP
+IF(WITH_WSREP)
+ADD_SUBDIRECTORY(wsrep)
+ENDIF()
+#---- WITH_WSREP
 
 IF(NOT WITHOUT_SERVER)
   SET (MYSQLD_STATIC_PLUGIN_LIBS "" CACHE INTERNAL "")
@@ -1157,7 +1176,7 @@ ENDIF()
 ADD_SUBDIRECTORY(packaging/WiX)
 ADD_SUBDIRECTORY(packaging/solaris)
 
-IF(UNIX)
+IF(UNIX AND NOT WITH_WSREP)
   INSTALL(FILES Docs/mysql.info DESTINATION ${INSTALL_INFODIR} OPTIONAL COMPONENT Info)
 ENDIF()
 #
@@ -1166,12 +1185,13 @@ ENDIF()
 IF(NOT INSTALL_LAYOUT MATCHES "RPM")
   INSTALL(FILES README LICENSE DESTINATION ${INSTALL_DOCREADMEDIR} COMPONENT Readme)
   INSTALL(FILES ${CMAKE_BINARY_DIR}/Docs/INFO_SRC ${CMAKE_BINARY_DIR}/Docs/INFO_BIN DESTINATION ${INSTALL_DOCDIR})
-
+  INSTALL(FILES Docs/README-wsrep DESTINATION ${INSTALL_DOCREADMEDIR} COMPONENT Readme)
   # MYSQL_DOCS_LOCATON is used in "make dist", points to the documentation directory
   SET(MYSQL_DOCS_LOCATION "" CACHE PATH "Location from where documentation is copied")
   MARK_AS_ADVANCED(MYSQL_DOCS_LOCATION)
   INSTALL(DIRECTORY Docs/ DESTINATION ${INSTALL_DOCDIR}
     COMPONENT Documentation
+    PATTERN "README-wsrep" EXCLUDE
     PATTERN "Makefile.*" EXCLUDE
     PATTERN "glibc*" EXCLUDE
     PATTERN "linuxthreads.txt" EXCLUDE
