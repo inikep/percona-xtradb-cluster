@@ -210,6 +210,10 @@ mysql_pfs_key_t log_scrub_thread_key;
 
 int unlock_keyrings(THD *thd);
 
+#ifdef WITH_WSREP
+extern bool wsrep_recovery;
+#endif /* WITH_WSREP */
+
 #ifdef HAVE_PSI_STAGE_INTERFACE
 /** Array of all InnoDB stage events for monitoring activities via
 performance schema. */
@@ -3226,10 +3230,24 @@ void srv_start_threads(bool bootstrap) {
 void srv_start_threads_after_ddl_recovery() {
   /* Start the buffer pool dump/load thread, which will access spaces thus
         must wait for DDL recovery */
+#ifdef WTIH_WSREP
+  if (!get_wsrep_recovery()) {
+    /* Skip creating buffer pool dump thread during wsrep
+    co-ordinate recovery (triggered using --wsrep-recover option). */
+    srv_threads.m_buf_dump =
+        os_thread_create(buf_dump_thread_key, buf_dump_thread);
+
+    srv_threads.m_buf_dump.start();
+  } else {
+    ib::warn() << "Skipping buffer pool dump/restore "
+                  "during wsrep recovery.";
+  }
+#else
   srv_threads.m_buf_dump =
       os_thread_create(buf_dump_thread_key, buf_dump_thread);
 
   srv_threads.m_buf_dump.start();
+#endif /* WITH_WSREP */
 
   /* Resume unfinished (un)encryption process in background thread. */
   if (!ts_encrypt_ddl_records.empty()) {

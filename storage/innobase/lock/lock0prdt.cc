@@ -717,7 +717,11 @@ dberr_t lock_prdt_lock(buf_block_t *block,  /*!< in/out: buffer block of rec */
     RecLock rec_lock(index, block, PRDT_HEAPNO, prdt_mode);
 
     trx_mutex_enter(trx);
+#ifdef WITH_WSREP
+    lock = rec_lock.create(NULL, trx, true);
+#else
     lock = rec_lock.create(trx, true);
+#endif /* WITH_WSREP */
     trx_mutex_exit(trx);
 
     status = LOCK_REC_SUCCESS_CREATED;
@@ -817,7 +821,11 @@ dberr_t lock_place_prdt_page_lock(
     RecLock rec_lock(index, rec_id, mode);
 
     trx_mutex_enter(trx);
+#ifdef WITH_WSREP
+    rec_lock.create(NULL, trx, true);
+#else
     rec_lock.create(trx, true);
+#endif /* WITH_WSREP */
     trx_mutex_exit(trx);
 
 #ifdef PRDT_DIAG
