@@ -1677,7 +1677,12 @@ run_again:
 /** Sets a table lock on the table mentioned in prebuilt.
 @param[in]	prebuilt	table handle
 @return error code or DB_SUCCESS */
+#ifdef WITH_WSREP
+dberr_t row_lock_table(row_prebuilt_t *prebuilt, dict_table_t *table,
+                       enum lock_mode mode) {
+#else
 dberr_t row_lock_table(row_prebuilt_t *prebuilt) {
+#endif /* WITH_WSREP */
   trx_t *trx = prebuilt->trx;
   que_thr_t *thr;
   dberr_t err;
@@ -1706,9 +1711,19 @@ run_again:
 
   trx_start_if_not_started_xa(trx, false);
 
+#ifdef WITH_WSREP
+  if (table) {
+    err = lock_table(0, table, static_cast<enum lock_mode>(mode), thr);
+  } else {
+    err = lock_table(0, prebuilt->table,
+                     static_cast<enum lock_mode>(prebuilt->select_lock_type),
+                     thr);
+  }
+#else
   err =
       lock_table(0, prebuilt->table,
                  static_cast<enum lock_mode>(prebuilt->select_lock_type), thr);
+#endif /* WITH_WSREP */
 
   trx->error_state = err;
 

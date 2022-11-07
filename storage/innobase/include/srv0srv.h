@@ -1428,6 +1428,10 @@ struct srv_slot_t {
 };
 #endif /* !UNIV_HOTBACKUP */
 
+#ifdef WITH_WSREP
+void wsrep_srv_conc_cancel_wait(trx_t* trx);
+#endif /* WITH_WSREP */
+
 #ifndef DBUG_OFF
 /** false before InnoDB monitor has been printed at least once, true
 afterwards */
