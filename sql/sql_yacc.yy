@@ -7388,6 +7388,9 @@ alter_event_stmt:
             Lex->event_parse_data->identifier= $4;
 
             Lex->sql_command= SQLCOM_ALTER_EVENT;
+#ifdef WITH_WSREP
+            Lex->stmt_definition_begin= @3.cpp.start;
+#endif /* WITH_WSREP */
           }
           ev_alter_on_schedule_completion
           opt_ev_rename_to
@@ -7405,6 +7408,9 @@ alter_event_stmt:
               can overwrite it
             */
             Lex->sql_command= SQLCOM_ALTER_EVENT;
+#ifdef WITH_WSREP
+            Lex->stmt_definition_end= (char*)YYLIP->get_cpp_ptr();
+#endif /* WITH_WSREP */
           }
         ;
 
