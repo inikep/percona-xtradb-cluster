@@ -1,4 +1,1 @@
-[submodule "PerconaFT"]
-	path = storage/tokudb/PerconaFT
-	url = https://github.com/percona/PerconaFT.git
 
