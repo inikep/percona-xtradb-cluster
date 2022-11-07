@@ -301,6 +301,7 @@ static struct my_option my_long_options[] = {
      &opt_zstd_compress_level, &opt_zstd_compress_level, 0, GET_UINT,
      REQUIRED_ARG, 3, 1, 22, 0, 0, 0},
 
+
     {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}};
 
 static const char *load_default_groups[] = {"mysqladmin", "client", 0};
