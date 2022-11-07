@@ -251,7 +251,12 @@ dberr_t row_lock_table_autoinc_for_mysql(
 /** Sets a table lock on the table mentioned in prebuilt.
 @param[in,out]	prebuilt	table handle
 @return error code or DB_SUCCESS */
+#ifdef WITH_WSREP
+dberr_t row_lock_table(row_prebuilt_t *prebuilt, dict_table_t *table = NULL,
+                       enum lock_mode mode = lock_mode(LOCK_IS));
+#else
 dberr_t row_lock_table(row_prebuilt_t *prebuilt);
+#endif /* WITH_WSREP */
 
 /** Does an insert for MySQL.
 @param[in]	mysql_rec	row in the MySQL format
