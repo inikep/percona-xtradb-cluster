@@ -409,6 +409,27 @@ struct System_variables {
     in the replication topology.
   */
   uint32_t immediate_server_version;
+
+#ifdef WITH_WSREP
+  bool wsrep_on;
+  bool wsrep_causal_reads;
+  bool wsrep_replicate_myisam;  // enable myisam replication
+  uint wsrep_sync_wait;
+  ulong wsrep_retry_autocommit;
+  ulong wsrep_OSU_method;
+  ulong wsrep_RSU_commit_timeout;
+  ulong wsrep_auto_increment_control;
+  bool wsrep_dirty_reads;
+
+  /*
+    Stored values of the auto_increment_increment and auto_increment_offset
+    that are will be needed when wsrep_auto_increment_control will be set to
+    'OFF', because the setting it to 'ON' leads to overwriting of the original
+    values (which are set by the user) by calculated values (which are based
+    on the cluster's size):
+  */
+  ulong saved_auto_increment_increment, saved_auto_increment_offset;
+#endif /* WITH_WSREP */
 };
 
 /**

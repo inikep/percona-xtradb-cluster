@@ -94,6 +94,11 @@ class IO_CACHE_binlog_cache_storage : public Truncatable_ostream {
      reset.
   */
   bool reset();
+
+#ifdef WITH_WSREP
+  my_off_t position() const noexcept;
+#endif /* WITH_WSREP */
+
   /**
      Returns the file name if a temporary file is opened, otherwise nullptr is
      returned.
@@ -201,6 +206,14 @@ class Binlog_cache_storage : public Basic_ostream {
      Returns true if binlog cache is empty.
   */
   bool is_empty() const { return length() == 0; }
+
+#ifdef WITH_WSREP
+  /* Not a good pratice to expose private member but PXC/wsrep
+  function would need re-write for this so temporary fix to
+  allow PXC/wsrep orginal function to work for now. */
+  IO_CACHE_binlog_cache_storage* io_cache()
+  { return &m_file; }
+#endif /* WITH_WSREP */
 
  private:
   Truncatable_ostream *m_pipeline_head = nullptr;
