@@ -1,4 +1,5 @@
 #!/bin/bash -ue
+
 # Copyright (C) 2013 Percona Inc
 #
 # This program is free software; you can redistribute it and/or modify
@@ -78,13 +79,32 @@ uextra=0
 disver=""
 
 # keyring specific variables.
-keyring=""
-keyringsid=""
+
+# Till PXC-5.7.22, only supporting keyring plugin was keyring_file plugin.
+
+keyring_plugin=0
+
+keyring_file_data=""
+keyring_vault_config=""
+
+keyring_server_id=""
+
 keyringbackupopt=""
 keyringapplyopt=""
+
 XB_DONOR_KEYRING_FILE="donor-keyring"
 XB_DONOR_KEYRING_FILE_PATH=""
-KEYRING_DIR=""
+KEYRING_FILE_DIR=""
+
+# encrpytion options
+transition_key=""
+encrypt_backup_options=""
+encrypt_prepare_options=""
+encrypt_move_options=""
+
+# Starting XB-2.4.11, XB started shipping custom build keyring plugin
+# This variable points it to the location of the same.
+xtrabackup_plugin_dir=""
 
 # Root directory for temporary files. This directory (and everything in it)
 # will be removed upon exit.
@@ -119,7 +139,7 @@ sst_ver=1
 if which pv &>/dev/null && pv --help | grep -q FORMAT; then
     pvopts+=$pvformat
 fi
-pcmd="pv $pvopts"
+pcmd=""
 declare -a RC
 
 # default XB (xtrabackup-binary) to use.
@@ -157,7 +177,7 @@ timeit()
 
     if [[ $ttime -eq 1 ]]; then
         x1=$(date +%s)
-        wsrep_log_debug "Evaluating $cmd"
+        wsrep_log_debug "Evaluating (@ $stage) $cmd"
         eval "$cmd"
         extcode=$?
         x2=$(date +%s)
@@ -165,7 +185,7 @@ timeit()
         wsrep_log_debug "NOTE: $stage took $took seconds"
         totime=$(( totime+took ))
     else
-        wsrep_log_debug "Evaluating $cmd"
+        wsrep_log_debug "Evaluating (@ $stage) $cmd"
         eval "$cmd"
         extcode=$?
     fi
@@ -549,28 +569,70 @@ read_cnf()
     encrypt=$(parse_cnf sst encrypt 0)
     sockopt=$(parse_cnf sst sockopt "")
     ncsockopt=$(parse_cnf sst ncsockopt "")
-    progress=$(parse_cnf sst progress "")
     rebuild=$(parse_cnf sst rebuild 0)
     ttime=$(parse_cnf sst time 0)
     scomp=$(parse_cnf sst compressor "")
     sdecomp=$(parse_cnf sst decompressor "")
 
-    keyring=$(parse_cnf mysqld keyring-file-data "")
-    if [[ -z $keyring ]]; then
-        keyring=$(parse_cnf sst keyring-file-data "")
+    # if wsrep_node_address is not set raise a warning
+    wsrep_node_address=$(parse_cnf mysqld wsrep_node_address "")
+    wsrep_sst_receive_address=$(parse_cnf mysqld wsrep_sst_receive_address "")
+    if [[ -z $wsrep_node_address && -z $wsrep_sst_receive_address ]]; then
+        wsrep_log_warning "wsrep_node_address or wsrep_sst_receive_address not set." \
+                          "Consider setting them if SST fails."
     fi
 
-    if [[ -n $keyring ]]; then
-        KEYRING_DIR=$(dirname "${keyring}")
+    # If pv is not in the PATH, then disable the 'progress'
+    # and 'rlimit' options
+    progress=$(parse_cnf sst progress "")
+    rlimit=$(parse_cnf sst rlimit "")
+    if [[ -n "$progress" ]] || [[ -n "$rlimit" ]]; then
+        pcmd="pv $pvopts"
+        if [[ ! -x `which pv` ]]; then
+            wsrep_log_error "pv not found in path: $PATH"
+            wsrep_log_error "Disabling all progress/rate-limiting"
+            pcmd=""
+            rlimit=""
+            progress=""
+        fi
     fi
 
-    keyringsid=$(parse_cnf mysqld server-id "")
-    if [[ -z $keyringsid ]]; then
-        keyringsid=$(parse_cnf sst server-id "")
+    #------- KEYRING config parsing
+
+    #======================================================================
+    # Parse for keyring plugin. Only 1 plugin can be enabled at given time.
+    keyring_file_data=$(parse_cnf mysqld keyring-file-data "")
+    keyring_vault_config=$(parse_cnf mysqld keyring-vault-config "")
+    if [[ -n $keyring_file_data && -n $keyring_vault_config ]]; then
+        wsrep_log_error "******************* FATAL ERROR ********************** "
+        wsrep_log_error "Can't have keyring_file and keyring_vault enabled at same time"
+        wsrep_log_error "****************************************************** "
+        exit 32
     fi
+
+    if [[ -n $keyring_file_data || -n $keyring_vault_config ]]; then
+        keyring_plugin=1
+    fi
+
+    if [[ -n $keyring_file_data ]]; then
+        KEYRING_FILE_DIR=$(dirname "${keyring_file_data}")
+    fi
+
+    #======================================================================
     # If we can't find a server-id, assume a default of 0
-    if [[ -z $keyringsid ]]; then
-        keyringsid=0
+    keyring_server_id=$(parse_cnf mysqld server-id "")
+    if [[ -z $keyring_server_id ]]; then
+        keyring_server_id=0
+    fi
+
+    #======================================================================
+    # Starting PXB-2.4.11, XB needs plugin directory as it has its own
+    # compiled version of keyring plugins. (if no specified it will look at
+    # default location and fail if not found there)
+    xtrabackup_plugin_dir=$(parse_cnf xtrabackup xtrabackup-plugin-dir "")
+    if [[ $keyring_plugin -eq 1 && -z $xtrabackup_plugin_dir ]]; then
+        wsrep_log_warning "WARNING: xtrabackup-plugin-dir (under xtrabackup section) missing"
+        wsrep_log_warning "xtrabackup installation will lookout for plugin at default location"
     fi
 
     # Refer to http://www.percona.com/doc/percona-xtradb-cluster/manual/xtrabackup_sst.html
@@ -602,7 +664,6 @@ read_cnf()
 
     ssl_dhparams=$(parse_cnf sst ssl-dhparams "")
 
-    rlimit=$(parse_cnf sst rlimit "")
     uextra=$(parse_cnf sst use-extra 0)
     iopts=$(parse_cnf sst inno-backup-opts "")
     iapts=$(parse_cnf sst inno-apply-opts "")
@@ -664,14 +725,14 @@ read_cnf()
     # Keep the donor's keyring file
     cpat+="\|.*/${XB_DONOR_KEYRING_FILE}$"
 
-    # Keep the KEYRING_DIR if it is a subdir of the datadir
+    # Keep the KEYRING_FILE_DIR if it is a subdir of the datadir
     # Normalize the datadir for comparison
     local readonly DATA_TEMP=$(dirname "$DATA/xxx")
-    if [[ -n "$KEYRING_DIR" && "$KEYRING_DIR" != "$DATA_TEMP" && "$KEYRING_DIR/" =~ $DATA ]]; then
+    if [[ -n "$KEYRING_FILE_DIR" && "$KEYRING_FILE_DIR" != "$DATA_TEMP" && "$KEYRING_FILE_DIR/" =~ $DATA ]]; then
 
         # Add the path to each subdirectory, this will ensure that
         # the path to the keyring is kept
-        local CURRENT_DIR=$(dirname "$KEYRING_DIR/xx")
+        local CURRENT_DIR=$(dirname "$KEYRING_FILE_DIR/xx")
         while [[ $CURRENT_DIR != "." && $CURRENT_DIR != "/" && $CURRENT_DIR != "$DATA_TEMP" ]]; do
             cpat+="\|${CURRENT_DIR}$"
             CURRENT_DIR=$(dirname "$CURRENT_DIR")
@@ -689,6 +750,9 @@ read_cnf()
 # get a feel of how big payload is being used to estimate progress.
 get_footprint()
 {
+    if [[ -z "$pcmd" ]]; then
+        return
+    fi
     pushd $WSREP_SST_OPT_DATA 1>/dev/null
     payload=$(find . -regex '.*\.ibd$\|.*\.MYI$\|.*\.MYD$\|.*ibdata1$' -type f -print0 | xargs -0 du --block-size=1 -c | awk 'END { print $1 }')
     if $MY_PRINT_DEFAULTS -c $WSREP_SST_OPT_CONF xtrabackup | grep -q -- "--compress"; then
@@ -706,16 +770,9 @@ get_footprint()
 # no programatic use of this monitoring.
 adjust_progress()
 {
-
-    if [[ ! -x `which pv` ]]; then
-        wsrep_log_error "pv not found in path: $PATH"
-        wsrep_log_error "Disabling all progress/rate-limiting"
-        pcmd=""
-        rlimit=""
-        progress=""
+    if [[ -z "$pcmd" ]]; then
         return
     fi
-
     if [[ -n $progress && $progress != '1' ]]; then
         if [[ -e $progress ]]; then
             pcmd+=" 2>>$progress"
@@ -854,7 +911,7 @@ cleanup_donor()
 
     fi
 
-    rm -rf "${KEYRING_DIR}/${XB_DONOR_KEYRING_FILE}" || true
+    rm -rf "${KEYRING_FILE_DIR}/${XB_DONOR_KEYRING_FILE}" || true
 
     exit $estatus
 
@@ -872,21 +929,143 @@ setup_ports()
     fi
 }
 
+# Returns a list of parent pids, until we reach pid=1 or any process
+# that starts with 'mysql'.  The list is returned as a string
+# separated by spaces.
+#
+# Parameter 1: the child pid
+#
+# This function will stop going up the parent process chain
+# when a process starting with 'mysql' is found.
+#
+function get_parent_pids()
+{
+    local mypid=$1
+    local list_of_pids=" "
+
+    while [[ $mypid -ne 1 ]]; do
+        local ps_out=$(ps -h -o ppid= -o comm $mypid 2>/dev/null)
+        if [[ $? -ne 0 || -z $ps_out ]]; then
+            break
+        fi
+        list_of_pids+="$mypid "
+
+        # If we reach a process that starts with mysql, exit
+        # such as mysqld, mysqld-debug, mysqld-safe
+        if [[ $(echo $ps_out | awk '{ print $2 }') =~ ^mysql ]]; then
+            break
+        fi
+
+        mypid=$(echo $ps_out | awk '{ print $1 }')
+    done
+
+    if [[ $list_of_pids = " " ]]; then
+        list_of_pids=""
+    fi
+    echo "$list_of_pids"
+}
+
 # waits ~1 minute for nc/socat to open the port and then reports ready
 # (regardless of timeout)
+#
+# Assumptions:
+#   1. The socat/nc processes do not launch subprocesses to handle
+#      the connections.  Note that socat can be configured to do so.
+#   2. socat is not bound to a specific interface/address, so the
+#      IP portion of the local address is all zeros (0000...000).
+#
+# Parameter 1: the pid of the wsrep_sst_xtrabackup-v2 process. We are looking
+#              for the socat process that was started by this script.
+# Parameter 2: the IP address of the SST host
+# Parameter 3: the Port of the SST host
+# Parameter 4: a descriptive name for what we are doing at this point
+#
 wait_for_listen()
 {
-    local HOST=$1
-    local PORT=$2
-    local MODULE=$3
+    local parentpid=$1
+    local host=$2
+    local port=$3
+    local module=$4
+
+    # Get the index for the 'local_address' column in /proc/xxxx/net/tcp
+    # We expect this to be the same for IPv4 (net/tcp) and IPv6 (net/tcp6)
+    local ip_index=0
+    local header
+    read -ra header <<< $(head -n 1 /proc/$$/net/tcp)
+    for i in "${!header[@]}"; do
+        if [[ ${header[$i]} = "local_address" ]]; then
+            # Add one to the index since arrays are 0-based
+            # but awk is 1-based
+            ip_index=$(( i + 1 ))
+            break
+        fi
+    done
+    if [[ $ip_index -eq 0 ]]; then
+        wsrep_log_error "******** FATAL ERROR *********************** "
+        wsrep_log_error "* Unexpected /proc/xx/net/tcp layout: cannot find local_address"
+        wsrep_log_error "******************************************** "
+        exit 1
+    fi
+
+    local port_in_hex
+    port_in_hex=$(printf "%04X" $port)
+
+    local user_id
+    user_id=$(id -u)
 
     for i in {1..300}
     do
-        ss -p state listening "( sport = :$PORT )" | grep -qE 'socat|nc' && break
+        # List all socat/nc processes started by the user of this script
+        # Then look for processes that have the script pid as a parent prcoess
+        # somewhere in the process tree
+
+        # List only socat/nc processes started by this user to avoid triggering SELinux
+        for pid in $(ps -u $user_id -o pid,comm | grep -E 'socat|nc' | awk '{ printf $1 " " }')
+        do
+            if [[ -z $pid || $pid = " " ]]; then
+                continue
+            fi
+
+            # Now get the processtree for this pid
+            # If the parentpid is NOT in the process tree, then ignore
+            if ! echo $(get_parent_pids $pid) | grep -q " $parentpid "; then
+                continue
+            fi
+
+            # get the sockets for the pid
+            # Note: may not need to get the list of sockets, is it ok to
+            # just look at the list of local addresses in tcp?
+            local sockets
+            sockets=$(ls -l /proc/$pid/fd | grep socket | cut -d'[' -f2 | cut -d ']' -f1 | tr '\n' '|')
+
+            # remove the trailing '|'
+            sockets=${sockets%|}
+
+            if [[ -n $sockets ]]; then
+                # For the network addresses, we expect to be listening
+                # on all interfaces, thus the address should be
+                # 00..000:PORT (all zeros for the IP address).
+
+                # Checking IPv4
+                if grep -E "\s(${sockets})\s" /proc/$pid/net/tcp |
+                        awk "{print \$${ip_index}}" |
+                        grep -q "^00*:${port_in_hex}$"; then
+                    break 2
+                fi
+
+                # Also check IPv6
+                if grep -E "\s(${sockets})\s" /proc/$pid/net/tcp6 |
+                        awk "{print \$${ip_index}}" |
+                        grep -q "^00*:${port_in_hex}$"; then
+                    break 2
+                fi
+            fi
+        done
+
         sleep 0.2
     done
 
-    echo "ready ${HOST}:${PORT}/${MODULE}//$sst_ver"
+    echo "ready ${host}:${port}/${module}//$sst_ver"
 }
 
 #
@@ -924,6 +1103,7 @@ check_extra()
 # 2nd param: msg
 # 3rd param: tmt : timeout
 # 4th param: checkf : file check
+#   If this is -2, skip the file checks (but still check the return code)
 #   If this is -1, skip all error checking
 #   If this is 0, do nothing (no additional checks)
 #   If this is 1, check to see if the gtid info file exists
@@ -966,8 +1146,7 @@ recv_data_from_donor_to_joiner()
 
     if [[ ${RC[0]} -eq 124 ]]; then
         wsrep_log_error "******************* FATAL ERROR ********************** "
-        wsrep_log_error "Possible timeout in receving first data from donor in "
-                        "gtid/keyring stage"
+        wsrep_log_error "Possible timeout in receving first data from donor in gtid/keyring stage"
         wsrep_log_error "****************************************************** "
         exit 32
     fi
@@ -981,6 +1160,11 @@ recv_data_from_donor_to_joiner()
             exit 32
         fi
     done
+
+    if [[ $checkf -eq -2 ]]; then
+        # no file checking
+        return
+    fi
 
     if [[ $checkf -eq 1 && ! -r "${XB_GTID_INFO_FILE_PATH}" ]]; then
         # this message should cause joiner to abort
@@ -1001,12 +1185,6 @@ recv_data_from_donor_to_joiner()
         wsrep_log_error "****************************************************** "
         exit 32
     fi
-
-    if [[ $checkf -eq 100 && ! -r "${dir}/${FILE_TO_RECEIVE}" ]]; then
-        wsrep_log_error "Did not receive expected file from donor: '${FILE_TO_RECEIVE}'"
-        exit 32
-    fi
-
 }
 
 #
@@ -1109,9 +1287,9 @@ initialize_tmpdir()
     fi
 
     if [[ -z "${tmpdir_path}" ]]; then
-        tmpdir_path=$(mktemp -dt pxc_sst_XXXXXXXX)
+        tmpdir_path=$(mktemp --tmpdir --directory pxc_sst_XXXX)
     else
-        tmpdir_path=$(mktemp -p "${tmpdir_path}" -dt pxc_sst_XXXXXXXX)
+        tmpdir_path=$(mktemp --tmpdir="${tmpdir_path}" --directory pxc_sst_XXXX)
     fi
 
     # This directory (and everything in it), will be removed upon exit
@@ -1172,7 +1350,13 @@ fi
 #
 # 2.4.4 : needed to support the keyring option
 #
-XB_REQUIRED_VERSION="2.4.4"
+# 2.4.11: XB now has its own keyring plugin complied and added support for vault plugin
+#         in addition to existing keyring_file plugin.
+#
+# 2.4.12: XB fixed bugs like keyring is empty + move-back stage now uses params from
+#         my.cnf.
+
+XB_REQUIRED_VERSION="2.4.12"
 
 XB_VERSION=`$INNOBACKUPEX_BIN --version 2>&1 | grep -oe '[0-9]\.[0-9][\.0-9]*' | head -n1`
 if [[ -z $XB_VERSION ]]; then
@@ -1192,7 +1376,11 @@ fi
 wsrep_log_debug "The $INNOBACKUPEX_BIN version is $XB_VERSION"
 
 # Get our MySQL version
-MYSQL_VERSION=$($(dirname $0)/mysqld --version 2>&1 | grep -oe '[0-9]\.[0-9][\.0-9]*' | head -n1)
+MYSQL_VERSION=$WSREP_SST_OPT_VERSION
+if [[ -z $MYSQL_VERSION ]]; then
+    wsrep_log_error "FATAL: Cannot determine the mysqld server version"
+    exit 2
+fi
 
 rm -f "${XB_GTID_INFO_FILE_PATH}"
 
@@ -1307,14 +1495,16 @@ if [[ $ssyslog -eq 1 ]]; then
             fi
         }
 
-        INNOAPPLY="${INNOBACKUPEX_BIN} $disver $iapts --prepare --binlog-info=ON \$rebuildcmd \$keyringapplyopt --target-dir=\${DATA} 2>&1  | logger -p daemon.err -t ${ssystag}innobackupex-apply "
-        INNOMOVE="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF} --datadir=\${TDATA} --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} $disver $impts  --move-back --binlog-info=ON --force-non-empty-directories --target-dir=\${DATA} 2>&1 | logger -p daemon.err -t ${ssystag}innobackupex-move "
-        INNOBACKUP="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF} --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} $disver $iopts \$ieopts \$INNOEXTRA \$keyringbackupopt --backup --galera-info  --binlog-info=ON --stream=\$sfmt --target-dir=\$itmpdir 2> >(logger -p daemon.err -t ${ssystag}innobackupex-backup)"
+        # prepare doesn't look at my.cnf instead it has its own generated backup-my.cnf
+        INNOPREPARE="${INNOBACKUPEX_BIN} $disver $iapts --prepare --binlog-info=ON \$rebuildcmd \$keyringapplyopt \$encrypt_prepare_options --target-dir=\${DATA} 2>&1  | logger -p daemon.err -t ${ssystag}innobackupex-apply "
+        INNOMOVE="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF} --datadir=\${TDATA} --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} $disver $impts  --move-back --binlog-info=ON --force-non-empty-directories \$encrypt_move_options --target-dir=\${DATA} 2>&1 | logger -p daemon.err -t ${ssystag}innobackupex-move "
+        INNOBACKUP="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF} --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} $disver $iopts \$ieopts \$INNOEXTRA \$keyringbackupopt --lock-ddl --backup --galera-info  --binlog-info=ON \$encrypt_backup_options --stream=\$sfmt --target-dir=\$itmpdir 2> >(logger -p daemon.err -t ${ssystag}innobackupex-backup)"
     fi
 else
-    INNOAPPLY="${INNOBACKUPEX_BIN} $disver $iapts --prepare --binlog-info=ON \$rebuildcmd \$keyringapplyopt --target-dir=\${DATA} &>\${DATA}/innobackup.prepare.log"
-    INNOMOVE="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF}  --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} --datadir=\${TDATA} $disver $impts  --move-back --binlog-info=ON --force-non-empty-directories --target-dir=\${DATA} &>\${DATA}/innobackup.move.log"
-    INNOBACKUP="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF}  --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} $disver $iopts \$ieopts \$INNOEXTRA \$keyringbackupopt --backup --galera-info --binlog-info=ON --stream=\$sfmt --target-dir=\$itmpdir 2>\${DATA}/innobackup.backup.log"
+    # prepare doesn't look at my.cnf instead it has its own generated backup-my.cnf
+    INNOPREPARE="${INNOBACKUPEX_BIN} $disver $iapts --prepare --binlog-info=ON \$rebuildcmd \$keyringapplyopt \$encrypt_prepare_options --target-dir=\${DATA} &>\${DATA}/innobackup.prepare.log"
+    INNOMOVE="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF}  --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} --datadir=\${TDATA} $disver $impts  --move-back --binlog-info=ON --force-non-empty-directories \$encrypt_move_options --target-dir=\${DATA} &>\${DATA}/innobackup.move.log"
+    INNOBACKUP="${INNOBACKUPEX_BIN} --defaults-file=${WSREP_SST_OPT_CONF}  --defaults-group=mysqld${WSREP_SST_OPT_CONF_SUFFIX} $disver $iopts \$ieopts \$INNOEXTRA \$keyringbackupopt --lock-ddl --backup --galera-info --binlog-info=ON \$encrypt_backup_options --stream=\$sfmt --target-dir=\$itmpdir 2>\${DATA}/innobackup.backup.log"
 fi
 
 #
@@ -1331,7 +1521,16 @@ then
     initialize_tmpdir
 
     # main temp directory for SST (non-XB) related files
-    donor_tmpdir=$(mktemp -p "${tmpdirbase}" -dt donor_tmp_XXXXXXXX)
+    donor_tmpdir=$(mktemp --tmpdir="${tmpdirbase}" --directory donor_tmp_XXXX)
+
+    # raise error if keyring_plugin is enabled but transit encryption is not
+    if [[ $keyring_plugin -eq 1 && $encrypt -le 0 ]]; then
+        wsrep_log_error "******************* FATAL ERROR ********************** "
+        wsrep_log_error "FATAL: keyring plugin is enabled but transit channel" \
+                        "is unencrypted. Enable encryption for SST traffic"
+        wsrep_log_error "****************************************************** "
+        exit 22
+    fi
 
     # Create the SST info file
     # This file contains SST information that is passed from the
@@ -1341,10 +1540,16 @@ then
     # This file has the same format as a cnf file.
     #
     sst_info_file_path="${donor_tmpdir}/${SST_INFO_FILE}"
+    transition_key=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
     echo "[sst]" > "$sst_info_file_path"
     echo "galera-gtid=$WSREP_SST_OPT_GTID" >> "$sst_info_file_path"
     echo "binlog-name=$(basename "$WSREP_SST_OPT_BINLOG")" >> "$sst_info_file_path"
     echo "mysql-version=$MYSQL_VERSION" >> "$sst_info_file_path"
+    # append transition_key only if keyring is being used.
+    if [[ $keyring_plugin -eq 1 ]]; then
+        echo "transition-key=$transition_key" >> "$sst_info_file_path"
+        encrypt_backup_options="--transition-key=\$transition_key"
+    fi
 
     #
     # SST is not needed. IST would suffice. By-pass SST.
@@ -1360,7 +1565,7 @@ then
         fi
 
         # main temp directory for xtrabackup (target-dir)
-        itmpdir=$(mktemp -p "${tmpdirbase}" -dt donor_xb_XXXXXXXX)
+        itmpdir=$(mktemp --tmpdir="${tmpdirbase}" --directory donor_xb_XXXX)
 
         if [[ -n "${WSREP_SST_OPT_USER:-}" && "$WSREP_SST_OPT_USER" != "(null)" ]]; then
            INNOEXTRA+=" --user=$WSREP_SST_OPT_USER"
@@ -1397,37 +1602,14 @@ then
         FILE_TO_STREAM=$SST_INFO_FILE
         send_data_from_donor_to_joiner "$donor_tmpdir" "${stagemsg}-sst-info"
 
-        if [[ -n $keyring ]]; then
-            # Verify that encryption is being used
-            # Do NOT send a keyring file without encryption
-            # Need encrypt >= 1
-            if [[ $encrypt -le 0 ]]; then
-                wsrep_log_error "******************* FATAL ERROR ********************** "
-                wsrep_log_error "FATAL: An unencrypted channel is being used."
-                wsrep_log_error "Sending/using a keyring requires an encrypted channel."
-                wsrep_log_error "****************************************************** "
-                exit 22
-            fi
-
-            # joiner need to wait to receive the file.
-            sleep 3
-
-            cp $keyring $KEYRING_DIR/$XB_DONOR_KEYRING_FILE
-
-            wsrep_log_info "Streaming donor-keyring file before SST"
-            keyringbackupopt=" --keyring-file-data=${KEYRING_DIR}/${XB_DONOR_KEYRING_FILE} --server-id=$keyringsid "
-            FILE_TO_STREAM=$XB_DONOR_KEYRING_FILE
-            send_data_from_donor_to_joiner "${KEYRING_DIR}" "${stagemsg}-keyring"
-
-        fi
-
         # Restore the transport commmand to its original state
         tcmd="$ttcmd"
-        if [[ -n $progress ]]; then
+        if [[ -n "$progress" ]];then
             get_footprint
-            tcmd="$pcmd | $tcmd"
-        elif [[ -n $rlimit ]]; then
+        elif [[ -n "$rlimit" ]];then
             adjust_progress
+        fi
+        if [[ -n "$pcmd" ]]; then
             tcmd="$pcmd | $tcmd"
         fi
 
@@ -1515,11 +1697,13 @@ then
 
     # May need xtrabackup_checkpoints later on
     rm -f ${DATA}/xtrabackup_binary ${DATA}/xtrabackup_galera_info  ${DATA}/xtrabackup_logfile
-    if [[ -n $KEYRING_DIR ]]; then
-        rm -f "${KEYRING_DIR}/${XB_DONOR_KEYRING_FILE}"
+    if [[ -n $KEYRING_FILE_DIR ]]; then
+        rm -f "${KEYRING_FILE_DIR}/${XB_DONOR_KEYRING_FILE}"
     fi
 
-    wait_for_listen ${WSREP_SST_OPT_HOST} ${WSREP_SST_OPT_PORT:-4444} ${MODULE} &
+    # Note: this is started as a background process
+    # So it has to wait for processes that are started by THIS process
+    wait_for_listen $$ ${WSREP_SST_OPT_HOST} ${WSREP_SST_OPT_PORT:-4444} ${MODULE} &
 
     trap sig_joiner_cleanup HUP PIPE INT TERM
     trap cleanup_joiner EXIT
@@ -1541,96 +1725,150 @@ then
     fi
 
     initialize_tmpdir
-    STATDIR=$(mktemp -p "${tmpdirbase}" -dt joiner_XXXXXXXX)
+    STATDIR=$(mktemp --tmpdir="${tmpdirbase}" --directory joiner_XXXX)
+
     sst_file_info_path="${STATDIR}/${SST_INFO_FILE}"
 
-    FILE_TO_RECEIVE="$SST_INFO_FILE"
-    recv_data_from_donor_to_joiner $STATDIR "${stagemsg}-sst-info" $stimeout 100
+    recv_data_from_donor_to_joiner $STATDIR "${stagemsg}-sst-info" $stimeout -2
 
-    # Extract information from the sst-info file that was just received
-    XB_GTID_INFO_FILE_PATH="${STATDIR}/${XB_GTID_INFO_FILE}"
-    parse_sst_info "$sst_file_info_path" sst galera-gtid "" > "$XB_GTID_INFO_FILE_PATH"
+    #
+    # Determine which file was received, the GTID or the SST_INFO
+    #
+    if [[ -r "${STATDIR}/${SST_INFO_FILE}" ]]; then
+        #
+        # Extract information from the sst-info file that was just received
+        #
+        XB_GTID_INFO_FILE_PATH="${STATDIR}/${XB_GTID_INFO_FILE}"
+        parse_sst_info "$sst_file_info_path" sst galera-gtid "" > "$XB_GTID_INFO_FILE_PATH"
 
-    DONOR_BINLOGNAME=$(parse_sst_info "$sst_file_info_path" sst binlog-name "")
-    DONOR_MYSQL_VERSION=$(parse_sst_info "$sst_file_info_path" sst mysql-version "")
+        DONOR_BINLOGNAME=$(parse_sst_info "$sst_file_info_path" sst binlog-name "")
+        DONOR_MYSQL_VERSION=$(parse_sst_info "$sst_file_info_path" sst mysql-version "")
 
-    if [[ -n "$DONOR_MYSQL_VERSION" ]]; then
-        local_version_str=""
-        donor_version_str=""
-
-        # Truncate the version numbers (we want the major.minor version like "5.6", not "5.6.35-...")
-        local_version_str=$(expr match "$MYSQL_VERSION" '\([0-9]\+\.[0-9]\+\)')
-        donor_version_str=$(expr match "$DONOR_MYSQL_VERSION" '\([0-9]\+\.[0-9]\+\)')
-
-        # Is this node's pxc version < donor's pxc version?
-        if ! check_for_version $local_version_str $donor_version_str; then
-            wsrep_log_error "******************* FATAL ERROR ********************** "
-            wsrep_log_error "FATAL: PXC is receiving an SST from a node with a higher version."
-            wsrep_log_error "This node's PXC version is $local_version_str.  The donor's PXC version is $donor_version_str."
-            wsrep_log_error "Upgrade this node before joining the cluster."
-            wsrep_log_error "****************************************************** "
-            exit 2
+        transition_key=$(parse_sst_info "$sst_file_info_path" sst transition-key "")
+        if [[ -n $transition_key ]]; then
+            encrypt_prepare_options="--transition-key=\$transition_key"
+            encrypt_move_options="--transition-key=\$transition_key --generate-new-master-key"
         fi
+    elif [[ -r "${STATDIR}/${XB_GTID_INFO_FILE}" ]]; then
+        #
+        # For compatibility, we have received the gtid file
+        #
+        XB_GTID_INFO_FILE_PATH="${STATDIR}/${XB_GTID_INFO_FILE}"
 
-        # Is the donor's pxc version < this node's pxc version?
-        if ! check_for_version $donor_version_str $local_version_str; then
-            wsrep_log_warning "WARNING: PXC is receiving an SST from a node with a lower version."
-            wsrep_log_warning "This node's PXC version is $local_version_str. The donor's PXC version is $donor_version_str."
-            wsrep_log_warning "Run mysql_upgrade in non-cluster (standalone mode) to upgrade."
-            wsrep_log_warning "Check the upgrade process here:"
-            wsrep_log_warning "    https://www.percona.com/doc/percona-xtradb-cluster/LATEST/howtos/upgrade_guide.html"
-        fi
-    fi
+        DONOR_BINLOGNAME=""
+        DONOR_MYSQL_VERSION=""
 
-    # server-id is already part of backup-my.cnf so avoid appending it.
-    # server-id is the id of the node that is acting as donor and not joiner node.
-
-    if [[ -n $keyring ]]; then
-        # joiner needs to wait to receive the file.
-        sleep 3
-
-        # Ensure that the destination directory exists and is R/W by us
-        if [[ ! -d "$KEYRING_DIR" || ! -r "$KEYRING_DIR" || ! -w "$KEYRING_DIR" ]]; then
-            wsrep_log_error "******************* FATAL ERROR ********************** "
-            wsrep_log_error "FATAL: Cannot acccess the keyring directory"
-            wsrep_log_error "  $KEYRING_DIR"
-            wsrep_log_error "It must already exist and be readable/writeable by MySQL"
-            wsrep_log_error "****************************************************** "
-            exit 22
-        fi
-
-        XB_DONOR_KEYRING_FILE_PATH="${KEYRING_DIR}/${XB_DONOR_KEYRING_FILE}"
-        recv_data_from_donor_to_joiner "${KEYRING_DIR}" "${stagemsg}-keyring" 0 2
-        keyringapplyopt=" --keyring-file-data=$XB_DONOR_KEYRING_FILE_PATH "
-
-        wsrep_log_info "donor keyring received at: '${XB_DONOR_KEYRING_FILE_PATH}'"
     else
-        # There shouldn't be a keyring file, since we do not have a keyring here
-        # This will error out if a keyring file IS found
-        XB_DONOR_KEYRING_FILE_PATH="${KEYRING_DIR}/${XB_DONOR_KEYRING_FILE}"
-        recv_data_from_donor_to_joiner "${KEYRING_DIR}" "${stagemsg}-keyring" 5 -1
-
-        if [[ -r "${XB_DONOR_KEYRING_FILE_PATH}" ]]; then
-            wsrep_log_error "******************* FATAL ERROR ********************** "
-            wsrep_log_error "FATAL: xtrabackup found '${XB_DONOR_KEYRING_FILE_PATH}'"
-            wsrep_log_error "The joiner is not using a keyring file but the donor has sent"
-            wsrep_log_error "a keyring file.  Please check your configuration to ensure that"
-            wsrep_log_error "both sides are using a keyring file"
-            wsrep_log_error "****************************************************** "
-            exit 32
-        fi
-    fi
-
-    if ! ps -p ${WSREP_SST_OPT_PARENT} &>/dev/null
-    then
         wsrep_log_error "******************* FATAL ERROR ********************** "
-        wsrep_log_error "Parent mysqld process (PID:${WSREP_SST_OPT_PARENT}) terminated unexpectedly."
+        wsrep_log_error "Did not receive expected file from donor: '${SST_INFO_FILE}' or '${XB_GTID_INFO_FILE}'"
         wsrep_log_error "****************************************************** "
         exit 32
     fi
 
     if [ ! -r "${STATDIR}/${IST_FILE}" ]
     then
+        if [[ -n "$DONOR_MYSQL_VERSION" ]]; then
+            local_version_str=""
+            donor_version_str=""
+
+            # Truncate the version numbers (we want the major.minor version like "5.6", not "5.6.35-...")
+            local_version_str=$(expr match "$MYSQL_VERSION" '\([0-9]\+\.[0-9]\+\)')
+            donor_version_str=$(expr match "$DONOR_MYSQL_VERSION" '\([0-9]\+\.[0-9]\+\)')
+
+            # Is this node's pxc version < donor's pxc version?
+            if ! check_for_version $local_version_str $donor_version_str; then
+                wsrep_log_error "******************* FATAL ERROR ********************** "
+                wsrep_log_error "FATAL: PXC is receiving an SST from a node with a higher version."
+                wsrep_log_error "This node's PXC version is $local_version_str.  The donor's PXC version is $donor_version_str."
+                wsrep_log_error "Upgrade this node before joining the cluster."
+                wsrep_log_error "****************************************************** "
+                exit 2
+            fi
+
+            # Is the donor's pxc version < this node's pxc version?
+            if ! check_for_version $donor_version_str $local_version_str; then
+                wsrep_log_warning "WARNING: PXC is receiving an SST from a node with a lower version."
+                wsrep_log_warning "This node's PXC version is $local_version_str. The donor's PXC version is $donor_version_str."
+                wsrep_log_warning "Run mysql_upgrade in non-cluster (standalone mode) to upgrade."
+                wsrep_log_warning "Check the upgrade process here:"
+                wsrep_log_warning "    https://www.percona.com/doc/percona-xtradb-cluster/LATEST/howtos/upgrade_guide.html"
+            fi
+        fi
+
+        # server-id is already part of backup-my.cnf so avoid appending it.
+        # server-id is the id of the node that is acting as donor and not joiner node.
+
+        # if keyring_plugin is enabled on JOINER and DONOR failed to send transition_key
+        # this means either of the 2 things:
+        # a. DONOR is at version < 5.7.22
+        # b. DONOR is not configured to use keyring_plugin
+
+        if [[ $keyring_plugin -eq 1 && -z $transition_key ]]; then
+
+            # case-a: DONOR is at version < 5.7.22. We should expect keyring file
+            #         and not transition_key.
+            if ! check_for_version $DONOR_MYSQL_VERSION "5.7.22"; then
+
+                 if [[ -n $keyring_file_data ]]; then
+                     # joiner needs to wait to receive the file.
+                     sleep 3
+
+                     # Ensure that the destination directory exists and is R/W by us
+                     if [[ ! -d "$KEYRING_FILE_DIR" || ! -r "$KEYRING_FILE_DIR" || ! -w "$KEYRING_FILE_DIR" ]]; then
+                         wsrep_log_error "******************* FATAL ERROR ********************** "
+                         wsrep_log_error "FATAL: Cannot acccess the keyring directory"
+                         wsrep_log_error "  $KEYRING_FILE_DIR"
+                         wsrep_log_error "It must already exist and be readable/writeable by MySQL"
+                         wsrep_log_error "****************************************************** "
+                         exit 22
+                     fi
+
+                     XB_DONOR_KEYRING_FILE_PATH="${KEYRING_FILE_DIR}/${XB_DONOR_KEYRING_FILE}"
+                     recv_data_from_donor_to_joiner "${KEYRING_FILE_DIR}" "${stagemsg}-keyring" 0 2
+                     keyringapplyopt=" --keyring-file-data=$XB_DONOR_KEYRING_FILE_PATH "
+                     wsrep_log_info "donor keyring received at: '${XB_DONOR_KEYRING_FILE_PATH}'"
+                 else
+                     # There shouldn't be a keyring file, since we do not have a keyring here
+                     # This will error out if a keyring file IS found
+                     XB_DONOR_KEYRING_FILE_PATH="${KEYRING_FILE_DIR}/${XB_DONOR_KEYRING_FILE}"
+                     recv_data_from_donor_to_joiner "${KEYRING_FILE_DIR}" "${stagemsg}-keyring" 5 -1
+
+                     if [[ -r "${XB_DONOR_KEYRING_FILE_PATH}" ]]; then
+                         wsrep_log_error "******************* FATAL ERROR ********************** "
+                         wsrep_log_error "FATAL: xtrabackup found '${XB_DONOR_KEYRING_FILE_PATH}'"
+                         wsrep_log_error "The joiner is not using a keyring file but the donor has sent"
+                         wsrep_log_error "a keyring file.  Please check your configuration to ensure that"
+                         wsrep_log_error "both sides are using a keyring file"
+                         wsrep_log_error "****************************************************** "
+                         exit 32
+                     fi
+                 fi
+            # case-b: JOINER is configured to use keyring but DONOR is not
+            else
+                 wsrep_log_error "******************* FATAL ERROR ********************** "
+                 wsrep_log_error "FATAL: JOINER is configured to use keyring_plugin" \
+                                 "(file/vault) but DONOR is not"
+                 wsrep_log_error "****************************************************** "
+                 exit 32
+            fi
+        fi
+
+        if [[ $keyring_plugin -eq 0 && -n $transition_key ]]; then
+            wsrep_log_error "******************* FATAL ERROR ********************** "
+            wsrep_log_error "FATAL: DONOR is configured to use keyring_plugin" \
+                            "(file/vault) but JOINER is not"
+            wsrep_log_error "****************************************************** "
+            exit 32
+        fi
+
+        if ! ps -p ${WSREP_SST_OPT_PARENT} &>/dev/null
+        then
+            wsrep_log_error "******************* FATAL ERROR ********************** "
+            wsrep_log_error "Parent mysqld process (PID:${WSREP_SST_OPT_PARENT}) terminated unexpectedly."
+            wsrep_log_error "****************************************************** "
+            exit 32
+        fi
+
         get_stream
         if [[ $encrypt -eq 1 && -n "$ecmd" ]]; then
             strmcmd=" \$ecmd | $strmcmd"
@@ -1642,12 +1880,20 @@ then
             xbstreameopts=$xbstreameopts_sst
         fi
 
-        if [[ -d ${DATA}/.sst ]]; then
-            wsrep_log_info "WARNING: Stale temporary SST directory: ${DATA}/.sst from previous state transfer. Removing"
-            rm -rf ${DATA}/.sst
+        # For compatibility, if the tmpdir is not specified, then use
+        # the datadir to hold the .sst directory
+        if [[ -z "$(parse_cnf sst tmpdir "")" ]]; then
+            if [[ -d ${DATA}/.sst ]]; then
+                wsrep_log_info "WARNING: Stale temporary SST directory: ${DATA}/.sst from previous state transfer. Removing"
+                rm -rf ${DATA}/.sst
+            fi
+            mkdir -p ${DATA}/.sst
+            JOINER_SST_DIR=$DATA/.sst
+        else
+            JOINER_SST_DIR=$(mktemp -p "${tmpdirbase}" -dt sst_XXXX)
         fi
-        mkdir -p ${DATA}/.sst
-        (recv_data_from_donor_to_joiner $DATA/.sst "${stagemsg}-SST" 0 0) &
+
+        (recv_data_from_donor_to_joiner "$JOINER_SST_DIR" "${stagemsg}-SST" 0 0) &
         jpid=$!
         wsrep_log_info "Proceeding with SST........."
 
@@ -1670,8 +1916,8 @@ then
             fi
         fi
 
-        TDATA=${DATA}
-        DATA="${DATA}/.sst"
+        TDATA=$DATA
+        DATA=$JOINER_SST_DIR
 
         XB_GTID_INFO_FILE_PATH="${DATA}/${XB_GTID_INFO_FILE}"
         wsrep_log_info "............Waiting for SST streaming to complete!"
@@ -1717,6 +1963,7 @@ then
                 else
                     pvopts="-f -s $count -l -N Decompression"
                 fi
+
                 pcmd="pv $pvopts"
                 adjust_progress
                 dcmd="$pcmd | xargs -n 2 qpress -T${nproc}d"
@@ -1776,7 +2023,7 @@ then
         fi
 
         wsrep_log_info "Preparing the backup at ${DATA}"
-        timeit "Xtrabackup prepare stage" "$INNOAPPLY"
+        timeit "Xtrabackup prepare stage" "$INNOPREPARE"
 
         if [ $? -ne 0 ];
         then
@@ -1792,7 +2039,7 @@ then
 
         XB_GTID_INFO_FILE_PATH="${TDATA}/${XB_GTID_INFO_FILE}"
         set +e
-        rm "$TDATA/innobackup.prepare.log" "$TDATA/innobackup.move.log" 2> /dev/null
+        rm -f $TDATA/innobackup.prepare.log $TDATA/innobackup.move.log
         set -e
         wsrep_log_info "Moving the backup to ${TDATA}"
         timeit "Xtrabackup move stage" "$INNOMOVE"
@@ -1800,8 +2047,8 @@ then
 
             # Did we receive a keyring file?
             if [[ -r "${XB_DONOR_KEYRING_FILE_PATH}" ]]; then
-                wsrep_log_info "Moving sst keyring into place: moving $XB_DONOR_KEYRING_FILE_PATH to $keyring"
-                mv "${XB_DONOR_KEYRING_FILE_PATH}" "$keyring"
+                wsrep_log_info "Moving sst keyring into place: moving $XB_DONOR_KEYRING_FILE_PATH to $keyring_file_data"
+                mv "${XB_DONOR_KEYRING_FILE_PATH}" "$keyring_file_data"
                 wsrep_log_debug "Keyring move successful"
             fi
 

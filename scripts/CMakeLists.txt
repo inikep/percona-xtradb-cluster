@@ -414,6 +414,9 @@ IF(WIN32)
   ENDFOREACH()
 
 ELSE()
+  IF(WITH_WSREP)
+    SET(WSREP_BINARIES wsrep_sst_common wsrep_sst_xtrabackup-v2 clustercheck pyclustercheck)
+  ENDIF()
 
   # Configure this one, for testing, but do not install it.
   CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/mysql_config.pl.in
@@ -427,6 +430,7 @@ ELSE()
       mysqldumpslow
       ps_mysqld_helper
       ps-admin
+      ${WSREP_BINARIES}
       )
   ELSE()
     SET(BIN_SCRIPTS
@@ -436,7 +440,15 @@ ELSE()
       mysqld_safe
       ps_mysqld_helper
       ps-admin
+      ${WSREP_BINARIES}
       )
+  ENDIF()
+  IF(WITH_WSREP)
+    SET(BIN_SCRIPTS
+      ${BIN_SCRIPTS}
+      wsrep_sst_common
+      wsrep_sst_xtrabackup-v2
+    )
   ENDIF()
 
   SET(PKGCONFIG_FILE ${LIBMYSQL_OS_OUTPUT_NAME}.pc)
@@ -499,8 +511,17 @@ ELSE()
     CONFIGURE_FILE(systemd/mysqld.tmpfiles.d.in
       ${CMAKE_CURRENT_BINARY_DIR}/mysql.conf ESCAPE_QUOTES @ONLY)
 
+    CONFIGURE_FILE(systemd/mysqld_bootstrap.in
+      ${CMAKE_CURRENT_BINARY_DIR}/mysqld_bootstrap ESCAPE_QUOTES @ONLY)
+
     INSTALL_SCRIPT(
       ${CMAKE_CURRENT_BINARY_DIR}/mysqld_pre_systemd
+      DESTINATION ${INSTALL_BINDIR}
+      COMPONENT Server
+    )
+
+    INSTALL_SCRIPT(
+      ${CMAKE_CURRENT_BINARY_DIR}/mysqld_bootstrap
       DESTINATION ${INSTALL_BINDIR}
       COMPONENT Server
     )
