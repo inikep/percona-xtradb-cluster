@@ -8,6 +8,10 @@
 #include "vault_keys_container.h"
 #include "vault_parser.h"
 
+#ifdef WITH_WSREP
+extern bool wsrep_is_wsrep_on(void);
+#endif /* WITH_WSREP */
+
 using keyring::IVault_curl;
 using keyring::IVault_parser;
 using keyring::Keys_iterator;
@@ -155,7 +159,15 @@ static int keyring_vault_init(MYSQL_PLUGIN plugin_info MY_ATTRIBUTE((unused))) {
         push_warning(current_thd, Sql_condition::SL_WARNING, 42000,
                      "keyring_vault initialization failure. Please check the "
                      "server log.");
+#ifdef WITH_WSREP
+      /* If running in cluster mode, keyring initialization failure is treated
+      as fatal error to avoid inconsistency in cluster enviornment where-in
+      some node of the cluster are running with keyring enabled and other
+      in keyring disabled mode, despite of same user provided configuration. */
+      return (wsrep_is_wsrep_on() ? 1 : 0);
+#else
       return 0;
+#endif /* WITH_WSREP */
     }
     is_keys_container_initialized = true;
     return 0;
