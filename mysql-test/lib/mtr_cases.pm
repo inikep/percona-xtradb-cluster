@@ -910,6 +910,10 @@ sub collect_one_suite($$$$) {
       mtr_report(" - Adding combinations for $suite");
 
       foreach my $test (@cases) {
+# ---- wsrep
+	# ENV is used in My::Config::ENV to store the environment so is not a true combination
+	next if ( $test->{'name'} eq 'ENV' );
+# ---- wsrep
         next if ($test->{'skip'} or defined $test->{'combination'});
         push(@new_cases, create_test_combinations($test, \@combinations));
       }
@@ -1156,7 +1160,8 @@ sub collect_one_test_case {
 
   # Test file name should consist of only alpha-numeric characters, dash (-)
   # or underscore (_), but should not start with dash or underscore.
-  if ($tname !~ /^[^_\W][\w-]*$/) {
+  # galera/pxc/wsrep has test-case with # so allowing # as part of the test-case
+  if ($tname !~ /^[^_\W][\w-#]*$/) {
     die("Invalid test file name '$suitename.$tname'. Test file " .
         "name should consist of only alpha-numeric characters, " .
         "dash (-) or underscore (_), but should not start with " .
