@@ -55,6 +55,10 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 enum status_severity { STATUS_VERBOSE, STATUS_INFO, STATUS_ERR };
 
+#ifdef WITH_WSREP
+extern bool wsrep_recovery;
+#endif /* WITH_WSREP */
+
 #define SHUTTING_DOWN() (srv_shutdown_state.load() != SRV_SHUTDOWN_NONE)
 
 /* Flags that tell the buffer pool dump/load thread which action should it
@@ -681,7 +685,11 @@ void buf_dump_thread() {
   buf_load_status(STATUS_VERBOSE, "Loading of buffer pool not started");
 
   if (srv_buffer_pool_load_at_startup) {
+#ifdef WITH_WSREP
+    if (!wsrep_recovery) buf_load();
+#else
     buf_load();
+#endif /* WITH_WSREP */
   }
 
   while (!SHUTTING_DOWN()) {
@@ -701,7 +709,14 @@ void buf_dump_thread() {
   }
 
   if (srv_buffer_pool_dump_at_shutdown && srv_fast_shutdown != 2) {
+#ifdef WITH_WSREP
+    if (!wsrep_recovery) {
+      buf_dump(FALSE /* ignore shutdown down flag,
+                     keep going even if we are in a shutdown state */);
+    }
+#else
     buf_dump(FALSE /* ignore shutdown down flag,
 		keep going even if we are in a shutdown state */);
+#endif /* WITH_WSREP */
   }
 }
