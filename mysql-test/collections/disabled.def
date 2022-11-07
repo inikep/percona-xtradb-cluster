@@ -166,6 +166,7 @@ tokudb.parts.nonflushing_analyze_debug : BUG#0 percona's test which has not yet 
 tokudb.parts.partition_debug_sync_tokudb : BUG#0 the "debug-sync" code does not exist in 8.0
 tokudb.parts.partition_debug_tokudb : BUG#0 the debug code does not exist in 8.0
 
+
 # tokudb.rpl suite tests
 tokudb.rpl.rpl_row_sp002_tokudb : BUG#0 tokudb does not support foreign keys
 tokudb.rpl.rpl_deadlock_tokudb : BUG#0 temporarily disabled until properly debugged
@@ -178,3 +179,71 @@ encryption.innodb-bad-key-change2 : BUG#5322 Keyring encrypted tablespace import
 encryption.innodb-bad-key-change3 : BUG#5322 Keyring encrypted tablespace import/export is broken
 encryption.innodb_encryption_discard_import : BUG#5322 Keyring encrypted tablespace import/export is broken
 encryption.innodb-redo-wrongkey : BUG#5635 Intoduce crypt_schema 2 for better error checking in encryption threads
+
+#--------------------------------------------------
+# Codership disabled tests begin here
+#--------------------------------------------------
+
+# default test-suite
+main.partition_pruning : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+main.range_icp : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+main.range_none : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+main.xa_prepared_binlog_off : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+
+# perf-schema
+perfschema.global_read_lock : BUG#0 Issue#79 2018-07-26 CODERSHIP mw-79
+perfschema.memory_aggregate_no_a : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+perfschema.start_server_low_index : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+
+# sys_vars
+sys_vars.wsrep_start_position_basic          : BUG#0 This needs server to start in cluster mode with wsrep initialized.
+sys_vars.wsrep_preordered_basic              : BUG#0 TC pending.
+sys_vars.wsrep_reject_queries_basic          : BUG#0 TC pending.
+sys_vars.sql_mode_func                       : BUG#0 Differences in result likely due to configuration. Need more investigation.
+sys_vars.innodb_buffer_pool_populate_basic   : BUG#0 Some of the NUMA modes are not supported on some distros.
+sys_vars.innodb_support_xa_func              : BUG#0 XA is not supported by PXC
+sys_vars.wsrep_max_ws_size_basic             : BUG#0 Setting this now also set repl.max_ws_size which is galera internal setting.
+
+# innodb_fts
+innodb_fts.fulltext_table_evict : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+
+# rpl
+rpl.rpl_innodb_info_tbl_slave_tmp_tbl_mismatch : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+rpl.rpl_multi_source_channel_map_stress : BUG#0 Issue#330 2018-07-26 CODERSHIP mw-330
+rpl.rpl_relay_log_recovery_positions : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+rpl.rpl_seconds_behind_master : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+rpl.rpl_semi_sync_ack_thread : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+rpl.rpl_semi_sync_after_sync : BUG#0 Issue#330 2018-06-19 CODERSHIP mw-330
+
+# galera
+galera.galera_toi_ddl_online : BUG#0 fails randomly with "deadlock error" as sequence of action is causing an issue.
+galera.galera_fk_multitable : BUG#0 Bug#80821
+galera.galera_kill_nochanges : BUG#0 mysql-wsrep#24
+galera.galera_toi_ddl_fk_insert : BUG#0 qa#39 0000-00-00 CODERSHIP galera_toi_ddl_fk_insert fails sporadically
+galera.pxc_encrypt_rest_blog : BUG#0 Currently PXC do not support binlog encryption
+galera.pxc_encrypt_rest_gt_vault : BUG#0 Vault server availability is unreliable
+galera.pxc_encrypt_rest_fpt_vault : BUG#0 Vault server availability is unreliable
+galera.galera_var_notify_cmd : BUG#0 Failing to invoke the external script
+galera.galera_sst_rsync : BUG#0 rsync feature removed
+galera.galera_ist_rsync : BUG#0 rsync feature removed
+galera.galera_truncate : BUG#0 result depends on which node indexing
+
+# galera-3nodes
+galera_3nodes.galera_ipv6_rsync : BUG#0 Needs rsync so disabled
+
+# galera_sr
+galera_sr.galera_sr_table_contents : BUG#0 missing header file
+#galera_sr.GCF-1043A : BUG#0 Hitting PXC-2513
+
+# galera_3nodes_sr
+galera_3nodes_sr.GCF-810A : BUG#0 Test sub-file missing
+galera_3nodes_sr.GCF-810B : BUG#0 Test sub-file missing
+galera_3nodes_sr.GCF-810C : BUG#0 Test sub-file missing
+
+#binlog
+binlog.binlog_index : BUG#0 codership/mysql-wsrep##71
+binlog.binlog_xa_prepared_disconnect : BUG#0 Issue#330 2018-05-16 CODERSHIP mw-330
+
+#--------------------------------------------------
+# Codership disabled tests end here
+#--------------------------------------------------

@@ -215,6 +215,7 @@ our $DEFAULT_SUITES =
   ."funcs_2,jp,stress,engines/iuds,engines/funcs,group_replication,audit_null,"
   ."interactive_utilities,"
   ."audit_log,"
+  ."galera,galera_3nodes,galera_sr,galera_3nodes,sr,"
   ."tokudb.add_index,tokudb.alter_table,tokudb,tokudb.bugs,tokudb.parts,"
   ."tokudb.rpl,tokudb.perfschema,"
   ."rocksdb,rocksdb.rpl,rocksdb.sys_vars,"
@@ -235,10 +236,13 @@ our $opt_quiet                     = $ENV{'MTR_QUIET'} || 0;
 our $opt_repeat                    = 1;
 our $opt_report_times              = 0;
 our $opt_resfile                   = $ENV{'MTR_RESULT_FILE'} || 0;
-our $opt_test_progress             = 1;
+#---- wsrep
+our $opt_test_progress             = 0;
+#our $opt_test_progress             = 1;
+#---- wsrep
 our $opt_sanitize                  = 0;
 our $opt_shutdown_timeout          = $ENV{MTR_SHUTDOWN_TIMEOUT} || 20; # seconds
-our $opt_start_timeout             = $ENV{MTR_START_TIMEOUT} || 180;   # seconds
+our $opt_start_timeout             = $ENV{MTR_START_TIMEOUT} || 240;   # seconds
 our $opt_user                      = "root";
 our $opt_valgrind                  = 0;
 our $opt_valgrind_secondary_engine = 0;
@@ -341,6 +345,8 @@ BEGIN {
   }
 }
 
+my $opt_port_group_size = $ENV{MTR_PORT_GROUP_SIZE} || 10;
+
 END {
   if (defined $opt_tmpdir_pid and $opt_tmpdir_pid == $$) {
     if (!$opt_start_exit) {
@@ -398,6 +404,8 @@ sub main {
   if ($opt_gcov) {
     gcov_prepare($basedir);
   }
+
+  check_wsrep_support();
 
   # Collect test cases from a file and put them into '@opt_cases'.
   if ($opt_do_test_list) {
@@ -1453,6 +1461,7 @@ sub command_line_setup {
     'build-thread|mtr-build-thread=i' => \$opt_build_thread,
     'mysqlx-port=i'                   => \$opt_mysqlx_baseport,
     'port-base|mtr-port-base=i'       => \$opt_port_base,
+    'port-group-size=s'               => \$opt_port_group_size,
 
     # Test case authoring
     'check-testcases!' => \$opt_check_testcases,
@@ -2165,7 +2174,7 @@ sub set_build_thread_ports($) {
   $ENV{MTR_BUILD_THREAD} = $build_thread;
 
   # Calculate baseport
-  $baseport = $build_thread * 10 + 10000;
+  $baseport= $build_thread * $opt_port_group_size + 10000;
 
   if (lc($opt_mysqlx_baseport) eq "auto") {
     if ($ports_per_thread > 10) {
@@ -3654,6 +3663,61 @@ sub ndbcluster_start ($) {
   return 0;
 }
 
+sub have_wsrep() {
+  my $wsrep_on= $mysqld_variables{'wsrep-on'};
+  return defined $wsrep_on
+}
+
+sub wsrep_is_bootstrap_server($) {
+  my $mysqld= shift;
+  return $mysqld->if_exist('wsrep_cluster_address') &&
+    ($mysqld->value('wsrep_cluster_address') eq "gcomm://" ||
+     $mysqld->value('wsrep_cluster_address') eq "'gcomm://'");
+}
+
+sub check_wsrep_support() {
+  if (have_wsrep())
+  {
+    mtr_report(" - binaries built with wsrep patch");
+
+    # ADD scripts to $PATH to that wsrep_sst_* can be found
+    my ($path) = grep { -f "$_/wsrep_sst_rsync"; } "$::bindir/scripts", $::path_client_bindir;
+    mtr_error("No SST scripts") unless $path;
+    $ENV{PATH}="$path:$ENV{PATH}";
+
+    # ADD mysql client library path to path so that wsrep_notify_cmd can find mysql
+    # client for loading the tables. (Don't assume each machine has mysql install)
+    ($path) = grep { -f "$_/mysql"; } "$::bindir/scripts", $::path_client_bindir;
+    mtr_error("No mysql client found") unless $path;
+    $ENV{PATH}="$path:$ENV{PATH}";
+
+    # Check whether WSREP_PROVIDER environment variable is set.
+    if (defined $ENV{'WSREP_PROVIDER'}) {
+      if ((mtr_file_exists($ENV{'WSREP_PROVIDER'}) eq "")  &&
+          ($ENV{'WSREP_PROVIDER'} ne "none")) {
+        mtr_error("WSREP_PROVIDER env set to an invalid path");
+      }
+      # WSREP_PROVIDER is valid; set to a valid path or "none").
+      mtr_verbose("WSREP_PROVIDER env set to $ENV{'WSREP_PROVIDER'}");
+    } else {
+      # WSREP_PROVIDER env not defined. Lets try to locate the wsrep provider
+      # library.
+      my $file_wsrep_provider=
+        mtr_file_exists("/usr/lib/galera/libgalera_smm.so",
+                        "/usr/lib64/galera/libgalera_smm.so");
+
+      if ($file_wsrep_provider ne "") {
+        # wsrep provider library found !
+        mtr_verbose("wsrep provider library found : $file_wsrep_provider");
+        $ENV{'WSREP_PROVIDER'}= $file_wsrep_provider;
+      } else {
+        mtr_verbose("Could not find wsrep provider library, setting it to 'none'");
+        $ENV{'WSREP_PROVIDER'}= "none";
+      }
+    }
+  }
+}
+
 sub create_config_file_for_extern {
   my %opts = (socket   => '/tmp/mysqld.sock',
               port     => 3306,
@@ -4066,6 +4130,59 @@ sub run_query {
                                  error  => $errfile);
 
   return $res;
+}
+
+sub run_query_output {
+  my ($mysqld, $query, $outfile)= @_;
+
+  my $args;
+  mtr_init_args(\$args);
+  mtr_add_arg($args, "--defaults-file=%s", $path_config_file);
+  mtr_add_arg($args, "--defaults-group-suffix=%s", $mysqld->after('mysqld'));
+
+  mtr_add_arg($args, "--silent");
+  mtr_add_arg($args, "--execute=%s", $query);
+
+  my $res= My::SafeProcess->run
+    (
+     name          => "run_query_output -> ".$mysqld->name(),
+     path          => $exe_mysql,
+     args          => \$args,
+     output        => $outfile,
+     error         => $outfile
+    );
+
+  return $res
+}
+
+
+sub wait_wsrep_ready($$) {
+  my ($tinfo, $mysqld)= @_;
+
+  my $sleeptime= 100; # Milliseconds
+  my $loops= ($opt_start_timeout * 1000) / $sleeptime;
+
+  my $name= $mysqld->name();
+  my $outfile= "$opt_vardir/tmp/$name.wsrep_ready";
+  my $query= "SET SESSION wsrep_sync_wait = 0;
+              SELECT VARIABLE_VALUE
+              FROM performance_schema.global_status
+              WHERE VARIABLE_NAME = 'wsrep_ready'";
+
+  for (my $loop= 1; $loop <= $loops; $loop++)
+  {
+    if (run_query_output($mysqld, $query, $outfile) == 0 &&
+        mtr_grab_file($outfile) =~ /^ON/)
+    {
+      unlink($outfile);
+      return 1;
+    }
+
+    mtr_milli_sleep($sleeptime);
+  }
+
+  $tinfo->{logfile}= "WSREP did not transition to state READY";
+  return 0;
 }
 
 sub do_before_run_mysqltest($) {
@@ -4706,61 +4823,64 @@ sub run_testcase ($) {
   my $keep_waiting_proc = 0;
   my $print_timeout     = start_timer($print_freq * 60);
 
+  my @procs;
   while (1) {
-    my $proc;
-    if ($keep_waiting_proc) {
-      # Any other process exited?
-      $proc = My::SafeProcess->check_any();
-      if ($proc) {
-        mtr_verbose("Found exited process $proc");
-      } else {
-        $proc = $keep_waiting_proc;
-        # Also check if timer has expired, if so cancel waiting
-        if (has_expired($test_timeout)) {
-          $keep_waiting_proc = 0;
-        }
-      }
-    }
-
-    if (!$keep_waiting_proc) {
-      if ($test_timeout > $print_timeout) {
-        my $timer = $ENV{'MTR_MANUAL_DEBUG'} ? start_timer(2) : $print_timeout;
-        $proc = My::SafeProcess->wait_any_timeout($timer);
-        if ($proc->{timeout}) {
-          if (has_expired($print_timeout)) {
-            # Print out that the test is still on
-            mtr_print("Test still running: $tinfo->{name}");
-            # Reset the timer
-            $print_timeout = start_timer($print_freq * 60);
+    if (!@procs && $test_timeout > $print_timeout)
+    {
+      my $timer = $ENV{'MTR_MANUAL_DEBUG'} ? start_timer(2) : $print_timeout;   
+      my $proc = My::SafeProcess->wait_any_timeout($print_timeout);
+      mtr_verbose("Got $proc");
+      if ($proc->{timeout}) {                                                   
+        if (has_expired($print_timeout)) {                                      
+          # Print out that the test is still on                                 
+          mtr_print("Test still running: $tinfo->{name}");                      
+          # Reset the timer                                                     
+          $print_timeout = start_timer($print_freq * 60);                       
+          next;
+        } elsif ($ENV{'MTR_MANUAL_DEBUG'}) {                                    
+          my $check_crash = check_expected_crash_and_restart($proc);            
+          if ($check_crash) {                                                   
+            # Keep waiting if it returned 2, if 1 don't wait or stop waiting.   
+            $keep_waiting_proc = 0     if $check_crash == 1;
+            $keep_waiting_proc = $proc if $check_crash == 2;
             next;
-          } elsif ($ENV{'MTR_MANUAL_DEBUG'}) {
-            my $check_crash = check_expected_crash_and_restart($proc);
-            if ($check_crash) {
-              # Keep waiting if it returned 2, if 1 don't wait or stop waiting.
-              $keep_waiting_proc = 0     if $check_crash == 1;
-              $keep_waiting_proc = $proc if $check_crash == 2;
-              next;
-            }
           }
         }
+      }
+      else
+      {
+        push @procs, $proc;
+      }
+    }
+    else
+    {
+      my $proc= My::SafeProcess->check_any();
+      if ($proc) {
+        mtr_verbose("Got $proc");
+        push @procs, $proc;
+      } elsif ( has_expired($test_timeout) )
+      {
+        my $timeout= My::SafeProcess->wait_any_timeout($test_timeout);
+        push @procs, $timeout;
       } else {
-        $proc = My::SafeProcess->wait_any_timeout($test_timeout);
+        mtr_milli_sleep(100);
       }
     }
 
-    # Will be restored if we need to keep waiting
-    $keep_waiting_proc = 0;
+#    # Will be restored if we need to keep waiting
+#    $keep_waiting_proc = 0;
+#
+#    unless (defined $proc) {
+#      mtr_error("wait_any failed");
+#    }
+#
+#    next if ($ENV{'MTR_MANUAL_DEBUG'} and $proc->{'SAFE_NAME'} eq 'timer');
 
-    unless (defined $proc) {
-      mtr_error("wait_any failed");
-    }
-
-    next if ($ENV{'MTR_MANUAL_DEBUG'} and $proc->{'SAFE_NAME'} eq 'timer');
-
-    mtr_verbose("Got $proc");
-    mark_time_used('test');
+#    mtr_verbose("Got $proc");
+#    mark_time_used('test');
 
     # Was it the test program that exited
+    foreach my $proc (@procs) {
     if ($proc eq $test) {
       my $res = $test->exit_status();
 
@@ -4866,7 +4986,8 @@ sub run_testcase ($) {
           goto SRVDIED;
         }
 
-        error_logs_to_comment($tinfo);
+        # ---- commenting it for WSREP/PXC
+        # error_logs_to_comment($tinfo);
 
         # Test case failure reported by mysqltest
         report_failure_and_restart($tinfo);
@@ -4903,8 +5024,9 @@ sub run_testcase ($) {
     my $check_crash = check_expected_crash_and_restart($proc, $tinfo);
     if ($check_crash) {
       # Keep waiting if it returned 2, if 1 don't wait or stop waiting.
-      $keep_waiting_proc = 0     if $check_crash == 1;
-      $keep_waiting_proc = $proc if $check_crash == 2;
+      if ($check_crash == 1) {
+        @procs = grep { $_ ne $proc } @procs;
+      }
       next;
     }
 
@@ -5011,6 +5133,7 @@ sub run_testcase ($) {
     }
 
     mtr_error("Unhandled process $proc exited");
+  } # for loop ends
   }
   mtr_error("Should never come here");
 }
@@ -5513,32 +5636,47 @@ sub check_expected_crash_and_restart($$) {
         }
 
         # Ignore any partial or unknown command
-        next unless $last_line =~ /^restart/;
+        next unless $last_line =~ /^(restart|try)/;
 
         # If last line begins "restart:", the rest of the line is read as
         # extra command line options to add to the restarted mysqld.
         # Anything other than 'wait' or 'restart:' (with a colon) will
         # result in a restart with original mysqld options.
+        my $try = 0;
         if ($last_line =~ /restart:(.+)/) {
           my @rest_opt = split(' ', $1);
           $mysqld->{'restart_opts'} = \@rest_opt;
+       } elsif ($last_line =~ /try:(.+)/) {
+         my @rest_opt= split(' ', $1);
+         $mysqld->{'restart_opts'}= \@rest_opt;
+         $try=1;
         } else {
           delete $mysqld->{'restart_opts'};
         }
 
-        # Attempt to remove the .expect file. If it fails in
-        # windows, retry removal after a sleep.
-        my $retry = 1;
-        while (
-          unlink($expect_file) == 0 &&
-          $! == 13 &&    # Error = 13, Permission denied
-          IS_WINDOWS && $retry-- >= 0
-        ) {
-          # Permission denied to unlink.
-          # Race condition seen on windows. Wait and retry.
-          mtr_milli_sleep(1000);
-        }
 
+       if ($try == 1) {
+          my $handle;
+          open ($handle,'>',$expect_file) or die("Cant open expect file for write");
+          print $handle "wait";
+          close ($handle);
+       } else {
+          unlink($expect_file);
+       }
+
+#        # Attempt to remove the .expect file. If it fails in
+#        # windows, retry removal after a sleep.
+#        my $retry = 1;
+#        while (
+#          unlink($expect_file) == 0 &&
+#          $! == 13 &&    # Error = 13, Permission denied
+#          IS_WINDOWS && $retry-- >= 0
+#        ) {
+#          # Permission denied to unlink.
+#          # Race condition seen on windows. Wait and retry.
+#          mtr_milli_sleep(1000);
+#        }
+#
         # Start server with same settings as last time
         mysqld_start($mysqld, $mysqld->{'started_opts'},
                      $tinfo, $bootstrap_opts);
@@ -5820,7 +5958,7 @@ sub mysqld_arguments ($$$) {
   # When mysqld is run by a root user(euid is 0), it will fail
   # to start unless we specify what user to run as, see BUG#30630
   my $euid = $>;
-  if (!IS_WINDOWS and $euid == 0 and (grep(/^--user/, @$extra_opts)) == 0) {
+  if (!IS_WINDOWS and $euid == 0 and (grep(/^--user=/, @$extra_opts)) == 0) {
     mtr_add_arg($args, "--user=root");
   }
 
@@ -6515,6 +6653,16 @@ sub start_servers($) {
 
     # Save this test case information, so next can examine it
     $mysqld->{'started_tinfo'} = $tinfo;
+
+    # If wsrep is on, we need to wait until the first
+    # server starts and bootstraps the cluster before
+    # starting other servers.
+    if (have_wsrep() && wsrep_is_bootstrap_server($mysqld)) {
+      mtr_verbose("WSREP waiting for first server to bootstrap cluster");
+      if (!wait_wsrep_ready($tinfo, $mysqld)) {
+        return 1;
+      }
+    }
   }
 
   # Wait for clusters to start
@@ -6548,6 +6696,11 @@ sub start_servers($) {
       } else {
         $tinfo->{logfile} = "Could not open server logfile: '$logfile'";
       }
+      return 1;
+    }
+
+    if (have_wsrep() && !wait_wsrep_ready($tinfo, $mysqld))
+    {
       return 1;
     }
   }
@@ -7372,6 +7525,7 @@ Options that specify ports
                         a build thread id that is unique to current host.
   mtr-build-thread=#    Specify unique number to calculate port number(s) from.
   mtr-port-base=#       Base for port numbers.
+  port-group-size=N     Reserve groups of TCP ports of size N for each MTR thread
   mysqlx-port           Specify the port number to be used for mysqlxplugin.
                         Can be set in environment variable MYSQLXPLUGIN_PORT.
                         If not specified will create its own ports. This option
