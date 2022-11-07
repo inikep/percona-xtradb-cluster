@@ -134,6 +134,9 @@ int check_change_password(THD *thd, const char *host, const char *user) {
   DBUG_ASSERT(initialized);
   sctx = thd->security_context();
   if (!thd->slave_thread &&
+#ifdef WITH_WSREP
+      (!WSREP(thd) || !thd->wsrep_applier) &&
+#endif /* WITH_WSREP */
       (strcmp(sctx->user().str, user) ||
        my_strcasecmp(system_charset_info, host, sctx->priv_host().str))) {
     if (sctx->password_expired()) {
@@ -143,6 +146,9 @@ int check_change_password(THD *thd, const char *host, const char *user) {
     if (check_access(thd, UPDATE_ACL, "mysql", NULL, NULL, 1, 0)) return (1);
   }
   if (!thd->slave_thread && likely((get_server_state() == SERVER_OPERATING)) &&
+#ifdef WITH_WSREP
+      (!WSREP(thd) || !thd->wsrep_applier) &&
+#endif /* WITH_WSREP */
       !strcmp(thd->security_context()->priv_user().str, "")) {
     my_error(ER_PASSWORD_ANONYMOUS_USER, MYF(0));
     return (1);
@@ -1180,6 +1186,10 @@ bool change_password(THD *thd, LEX_USER *lex_user, char *new_password,
   bool is_role;
   int ret;
 
+#ifdef WITH_WSREP
+  const LEX_CSTRING query_save = thd->query();
+#endif /* WITH_WSREP */
+
   DBUG_ENTER("change_password");
   DBUG_ASSERT(lex_user && lex_user->host.str);
   DBUG_PRINT("enter", ("host: '%s'  user: '%s' current_password: '%s' \
@@ -1203,8 +1213,29 @@ bool change_password(THD *thd, LEX_USER *lex_user, char *new_password,
   */
   Save_and_Restore_binlog_format_state binlog_format_state(thd);
 
+#ifdef WITH_WSREP
+  if (WSREP(thd) && !thd->wsrep_applier) {
+    char buff[2048];
+    ulong query_length =
+        sprintf(buff, "SET PASSWORD FOR '%-.120s'@'%-.120s'='%-.120s'",
+                lex_user->user.str ? lex_user->user.str : "",
+                lex_user->host.str ? lex_user->host.str : "", new_password);
+    thd->set_query(buff, query_length);
+
+    if ((ret = open_grant_tables(thd, tables, &transactional_tables,
+                                 WSREP_MYSQL_DB, "user"))) {
+      thd->set_query(query_save);
+      thd->wsrep_exec_mode = LOCAL_STATE;
+      DBUG_RETURN(ret != 1);
+    }
+  } else {
+    if ((ret = open_grant_tables(thd, tables, &transactional_tables)))
+      DBUG_RETURN(ret != 1);
+  }
+#else
   if ((ret = open_grant_tables(thd, tables, &transactional_tables)))
     DBUG_RETURN(ret != 1);
+#endif /* WITH_WSREP */
 
   table = tables[ACL_TABLES::TABLE_USER].table;
 
@@ -1285,6 +1316,14 @@ end:
       thd, AUDIT_EVENT(MYSQL_AUDIT_AUTHENTICATION_CREDENTIAL_CHANGE),
       thd->is_error() || result, lex_user->user.str, lex_user->host.str,
       authentication_plugin.c_str(), is_role, NULL, NULL);
+
+#ifdef WITH_WSREP
+  if (WSREP(thd) && !thd->wsrep_applier) {
+    WSREP_TO_ISOLATION_END
+    thd->set_query(query_save);
+    thd->wsrep_exec_mode = LOCAL_STATE;
+  }
+#endif /* WITH_WSREP */
 
   DBUG_RETURN(result || commit_result);
 }
