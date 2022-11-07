@@ -205,6 +205,10 @@ mysql_pfs_key_t log_scrub_thread_key;
 
 int unlock_keyrings(THD *thd);
 
+#ifdef WITH_WSREP
+extern bool wsrep_recovery;
+#endif /* WITH_WSREP */
+
 #ifdef HAVE_PSI_STAGE_INTERFACE
 /** Array of all InnoDB stage events for monitoring activities via
 performance schema. */
@@ -3136,9 +3140,21 @@ void srv_start_threads(bool bootstrap) {
     ibuf_update_max_tablespace_id();
   }
 
+#ifdef WITH_WSREP
+  if (!wsrep_recovery) {
+    /* Skip creating buffer pool dump thread during wsrep
+    co-ordinate recovery (triggered using --wsrep-recover option). */
+    srv_threads.m_buf_dump_thread_active = true;
+    os_thread_create(buf_dump_thread_key, buf_dump_thread);
+  } else {
+    ib::warn() << "Skipping buffer pool dump/restore "
+                  "during wsrep recovery.";
+  }
+#else
   /* Create the buffer pool dump/load thread */
   srv_threads.m_buf_dump_thread_active = true;
   os_thread_create(buf_dump_thread_key, buf_dump_thread);
+#endif /* WITH_WSREP */
 
   dict_stats_thread_init();
 
