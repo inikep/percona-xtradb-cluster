@@ -166,6 +166,9 @@ table_log_status.h
 table_plugin_table.h
 table_replication_applier_filters.h
 table_replication_applier_global_filters.h
+# -- WITH_WSREP
+table_pxc_cluster_view.h
+# -- WITH_WSREP
 cursor_by_account.cc
 cursor_by_host.cc
 cursor_by_thread.cc
@@ -305,6 +308,9 @@ table_log_status.cc
 table_plugin_table.cc
 table_replication_applier_filters.cc
 table_replication_applier_global_filters.cc
+# -- WITH_WSREP
+table_pxc_cluster_view.cc
+# -- WITH_WSREP
 )
 
 MYSQL_ADD_PLUGIN(perfschema ${PERFSCHEMA_SOURCES} STORAGE_ENGINE MANDATORY STATIC_ONLY)
