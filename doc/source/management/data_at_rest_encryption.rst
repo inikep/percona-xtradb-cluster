@@ -1,804 +1,434 @@
 .. _data_at_rest_encryption:
 
-================================================================================
+=======================
 Data at Rest Encryption
-================================================================================
+=======================
+
+This feature is considered **BETA** quality.
 
 .. contents::
    :local:
 
-Percona has data-at-rest encryption. Stored data in tables is encrypted to prevent the data from being read by users without the correct authorization. The encryption adds a slight overhead to the system.
+.. _innodb_general_tablespace_encryption:
 
-You can select to encrypt the following:
+Introduction
+============
 
-    * All - tablespaces and tables
-    * Specific tables
-    * All but specific tables
+"Data-at-rest" term refers to all the data stored on disk by some server within
+system tablespace, general tablespace, redo-logs, undo-logs, etc. As an
+opposite, "data-in-transit" means data transmitted to other node or client.
+Data-in-transit can be encrypted using SSL connection (details are available in
+the `encrypt traffic documentation <https://www.percona.com/doc/percona-xtradb-cluster/LATEST/security/encrypt-traffic.html>`_) and
+therefore supposed to be safe. Below sections are about securing the
+data-at-rest only. 
 
+Currently data-at-rest encryption is supported in |PXC| for general tablespace,
+file-per-tablespace, and temporary tables.
 
-.. _data-at-rest-encryption.prerequisite:
+InnoDB tablespace encryption
+============================
 
+|MySQL| supports tablespace encryption, but only for file-per-table tablespace.
+User should create a table that has its own dedicated tablespace, making this
+tablespace encrypted by specifying the appropriate option.
 
-Prerequisites
-================================================================================
+Percona Server starting from :rn:`5.7.21-20` is extending support for
+encrypting `other tablespaces <https://www.percona.com/doc/percona-server/LATEST/management/data_at_rest_encryption.html>`_ too.
 
-Data at rest encryption requires that a keyring plugin, such as `keyring_file
-<https://dev.mysql.com/doc/refman/8.0/en/keyring-file-plugin.html>`_ or
-:ref:`keyring_vault_plugin` be installed and already loaded. To load the
-``keyring`` plugin when starting the server, use the ``--early-plugin-load``
-option:
-
-.. code-block:: bash
-
-   $ mysqld --early-plugin-load="keyring_file=keyring_file.so"
-
-Alternatively, you can add this option to your configuration file:
+|PXC| already supported data-at-rest encryption starting from ``5.7``.
+File-per-tablespace and General tablespace encryption are table/tablespace
+specific features and are enabled on object level through DDL:
 
 .. code-block:: guess
+
+   CREATE TABLE t1 (c1 INT, PRIMARY KEY pk(c1)) ENCRYPTION=’Y’;
+   CREATE TABLESPACE foo ADD DATAFILE 'foo.ibd' ENCRYPTION='Y';
+
+DDL statements are replicated in PXC cluster, thus creating encrypted table or
+tablespace on all the nodes of the cluster.
+
+This feature requires a keyring plugin to be loaded before it can be used.
+Currently Percona Server (and in turn |PXC|) supports 2 types of keyring
+plugin: ``keyring_file`` and ``keyring_vault``.
+
+Configuring PXC to use keyring_file plugin
+==========================================
+
+keyring_file
+------------
+
+Support for the keyring file was added back when |PXC| 5.7 got General
+Availability (GA) status. Following subsection covers some of the important
+semantics of ``keyring_file`` plugin needed to use it in scope of data-at-rest
+encryption.
+
+``keyring_file`` stores encryption key to a physical file. Location of this
+file is specified by ``keyring_file_data`` parameter configured during startup.
+
+Configuration
+*************
+
+|PXC| inherits upstream (Percona Server) behavior to configure ``keyring_file``
+plugin. Following options are to be set in the configuration file:
+
+.. code-block:: text
 
    [mysqld]
    early-plugin-load=keyring_file.so
+   keyring_file_data=<PATH>/keyring
 
-.. warning::
+A ``SHOW PLUGINS`` statement can be used further to check if plugin has been
+successfully loaded.
 
-   Only one keyring plugin should be enabled at a time. Enabling multiple
-   keyring plugins is not supported and may result in data loss.
+.. note:: PXC recommends same configuration on all the nodes of the cluster,
+   and that also means all the nodes of the cluster should have keyring
+   configured. Mismatch in keyring configuration will not allow JOINER node to
+   join the cluster.
 
-.. seealso::
-
-   |MySQL| Documentation:
-      - `Installing a Keyring Plugin <https://dev.mysql.com/doc/refman/8.0/en/keyring-installation.html>`_
-      - `The --early-plugin-load Option <https://dev.mysql.com/doc/refman/8.0/en/server-options.html#option_mysqld_early-plugin-load>`_
-
-
-.. _data-at-rest-encryption.keyring.changing-default:
-
-Installation
-==============================================================================
-
-The safest way to load the plugin is to do it on the server startup by
-using `--early-plugin-load variable
-<https://dev.mysql.com/doc/refman/8.0/en/server-options.html#option_mysqld_early-plugin-load>`_
-option:
-
-.. code-block:: bash
-
-  --early-plugin-load="keyring_vault=keyring_vault.so" \
-  --loose-keyring_vault_config="/home/mysql/keyring_vault.conf"
-
-It should be loaded this way to be able to facilitate recovery for encrypted
-tables.
-
-.. warning::
-
-  If server should be started with several plugins loaded early,
-  ``--early-plugin-load`` should contain their list separated by semicolons. Also
-  it's a good practice to put this list in double quotes so that semicolons
-  do not create problems when executed in a script.
-
-Apart from installing the plugin you also need to set the
-:variable:`keyring_vault_config` variable. This variable should point to the
-keyring_vault configuration file, whose contents are discussed below.
-
-This plugin supports the SQL interface for keyring key management described in
-`General-Purpose Keyring Key-Management Functions
-<https://dev.mysql.com/doc/refman/8.0/en/keyring-udfs-general-purpose.html>`_
-manual.
-
-To enable the functions you'll need to install the ``keyring_udf`` plugin:
-
-.. code-block:: mysql
-
-  mysql> INSTALL PLUGIN keyring_udf SONAME 'keyring_udf.so';
-
-Changing the Default Keyring Encryption
-================================================================================
-
-When encryption is enabled and the server is configured to use the KEYRING
-encryption, new tables use the default encryption key.
-
-You many change this default encryption via the
-:variable:`innodb_default_encryption_key_id` variable.
-
-.. seealso::
-
-   Configuring the way how tables are encrypted
-      :variable:`default_table_encryption`
-
-System Variables
---------------------------------------------------------------------------------
-
-.. variable:: innodb_default_encryption_key_id
-
-   :cli: ``--innodb-default-encryption-key-id``
-   :dyn: Yes
-   :scope: Session
-   :vartype: Numeric
-   :default: 0
-
-The ID of the default encryption key. By default, this variable contains **0**
-to encrypt new tables with the latest version of the key ``percona_innodb-0``.
-
-To change the default value use the following syntax:
-
-.. code-block:: guess
-
-   mysql> SET innodb_default_encryption_key_id = NEW_ID
-
-Here, **NEW_ID** is an unsigned 32-bit integer.
-
-
-Keyring Encryption
-================================================================================
-
-:Availabiliity: This feature is **Experimental** quality
-
-The keyring management is enabled for each table (per file table) separately when you set the encryption in the ``ENCRYPTION`` clause to ``KEYRING`` in the supported SQL statement.
-
-- CREATE TABLE ... ENCRYPTION='KEYRING'
-- ALTER TABLE .. ENCRYPTION='KEYRING'
-
-.. note::
-
-  Running ``ALTER TABLE ... ENCRYPTION='KEYRING'`` on the table created with ``ENCRYPTION='KEYRING'`` converts the table back to the existing MySQL scheme, tablespace, or table encryption state.
-
-
-.. _keyring_vault_plugin:
-
-Keyring Vault plugin
-====================
-
-The ``keyring_vault`` plugin can be used to store the encryption keys inside the
-`Hashicorp Vault server <https://www.vaultproject.io>`_.
-
-.. important::
-
-   ``keyring_vault`` plugin only works with kv secrets engine version 1.
-
-   .. seealso::
-
-      HashiCorp Documentation: More information about ``kv`` secrets engine
-         https://www.vaultproject.io/docs/secrets/kv/kv-v1.html
-
+If user has bootstrapped node with keyring enabled, then upcoming nodes of the
+cluster will inherit the keyring (encrypted key) from the DONOR node
+(in |PXC| prior to 5.7.22) or generate it (starting from |PXC| 5.7.22).
 
 Usage
---------------------------------------------------------------------------------
+*****
 
-On plugin initialization ``keyring_vault`` connects to the Vault server using
-credentials stored in the credentials file. Location of this file is specified
-in by :variable:`keyring_vault_config`. On successful initialization it
-retrieves keys signatures and stores them inside an in-memory hash map.
+Prior to |PXC| :rn:`5.7.22-29.26` DONOR node had to send keyring to JOINER,
+because |xtrabackup| backs up encrypted tablespaces in encrypted fashion and in
+order for JOINER to read these encrypted tablespaces it needs the same
+encryption key that was used for its encryption on DONOR. This restriction has
+been relaxed in |PXC| 5.7.22 and now |xtrabackup| re-encrypts the data using
+transition-key and JOINER re-encrypts it using a new generated master-key.
 
-Configuration file should contain the following information:
+Keyring is sent from DONOR to JOINER as part of SST process (prior to |PXC|
+5.7.22) or generated on JOINER. SST can be done
+using xtrabackup (the recommended way), rsync, or mysqldump. In *xtrabackup*
+case, keyring is sent over explicitly before the real data backup/streaming
+starts. Other two SST variants behave differently: mysqldump uses logical
+backup so it doesn’t need to send keyring, while rsync will sync the keys when
+it syncs data directories. 
 
-* ``vault_url`` - the address of the server where Vault is running. It can be a
-  named address, like one in the following example, or just an IP address. The
-  important part is that it should begin with ``https://``.
+.. warning:: rsync doesn’t provide a secure channel. This means keyring sent
+   using rsync SST could be vulnerable to attack. As an opposite, following the
+   recommended SST way with xtrabackup user can configure secure channel and so
+   keyring is fully secured (in fact, xtrabackup will not allow user to send
+   the keyring if the SST channel is not secured). 
 
-* ``secret_mount_point`` - the name of the mount point where ``keyring_vault``
-  will store keys.
+.. warning Percona doesn't recommend rsync-based SST for data-at-rest
+   encryption using keyring.
 
-* ``token`` - a token generated by the Vault server, which ``keyring_vault``
-  will further use when connecting to the Vault. At minimum, this token should
-  be allowed to store new keys in a secret mount point (when ``keyring_vault``
-  is used only for transparent data encryption, and not for ``keyring_udf``
-  plugin). If ``keyring_udf`` plugin is combined with ``keyring_vault``, this
-  token should be also allowed to remove keys from the Vault (for the
-  ``keyring_key_remove`` operation supported by the ``keyring_udf`` plugin).
+|PXC| doesn't allow to combine nodes with encryption and nodes without 
+encryption. This is not allowed in order to maintain data consistency. For
+example, user creates node-1 with encryption (keyring) enabled and node-2
+with encryption (keyring) disabled. Now if user tries to create a table with
+encryption on node-1, it will fail on node-2 causing data inconsistency.
+With |PXC| :rn:`5.7.22-29.26`, node will fail to start if it fails to load
+keyring plugin. 
 
-* ``vault_ca [optional]`` - this variable needs to be specified only when the
-  Vault's CA certificate is not trusted by the machine that is going to connect
-  to the Vault server. In this case this variable should point to CA
-  certificate that was used to sign Vault's certificates.
+.. note:: If user hasn’t specifiy keyring parameters there is no way for node
+   to know that it needs to load keyring. JOINER node may start but eventually
+   shutdown when DML level inconsistency with encrypted tablespace will be
+   detected.
 
-.. warning::
+If a node doesn’t have encrypted tablespace, keyring is not generated and
+the keyring file is empty. Actual keyring is generated only when node starts
+using encrypted tablespace.
 
-   Each ``secret_mount_point`` should be used by only one server - otherwise
-   mixing encryption keys from different servers may lead to undefined
-   behavior.
+User can rotate the key as and when needed. 
+``ALTER INSTANCE ROTATE INNODB MASTER KEY`` statement is not replicated on
+cluster, so it is local operation for the said node.
 
-An example of the configuration file looks like this: ::
+Starting from |PXC| 5.7.22 JOINER generates its own keyring. In |PXC| prior to
+5.7.22 when JOINER joined the cluster its keyring was the same as DONOR’s one.
+User could rotate the key if different keys for each of the node where demanded
+by the user’s requirements (internal rules). But using different keys for each
+node is not necessary from the technical side, as all nodes of the cluster can
+continue operating with same MASTER-key.
 
-  vault_url = https://vault.public.com:8202
-  secret_mount_point = secret
-  token = 58a20c08-8001-fd5f-5192-7498a48eaf20
-  vault_ca = /data/keyring_vault_confs/vault_ca.crt
+Compatibility
+*************
 
-When a key is fetched from a ``keyring`` for the first time the
-``keyring_vault`` communicates with the Vault server, and retrieves the key
-type and data. Next it queries the Vault server for the key type and data and
-caches it locally.
+Keyring (or, more generally, the |PXC| SST process) is backward compatible, as
+in higher version JOINER can join from lower version DONOR, but not vice-versa.
+More details are covered below, in `Upgrade and compatibility issues`_ section.
 
-Key deletion will permanently delete key from the in-memory hash map and the
-Vault server.
+.. note:: Since |PXC| 5.6 didn't have encrypted tablespace, no major
+   upgrade scenario for data-at-rest encryption is possible from it.
 
-.. note::
+Configuring PXC to use keyring_vault plugin
+===========================================
 
-  |Percona XtraBackup| currently doesn't support backup of tables encrypted
-  with :ref:`keyring_vault_plugin`.
+keyring_vault
+-------------
 
-System Variables
+The ``keyring_vault`` plugin is supported starting from PXC 5.7.22. This plugin
+allows storing the master-key in vault-server (vs. local file as in case of
+``keyring_file``). 
+
+.. warning:: rsync doesn't support ``keyring_vault``, and SST on JOINER is
+   aborted if rsync is used on the node with ``keyring_vault`` configured. 
+
+Configuration
+*************
+
+Configuration options are same as `upstream <https://www.percona.com/doc/percona-server/5.7/management/data_at_rest_encryption.html#keyring-vault-plugin>`_. The ``my.cnf`` configuration file should contain following options:
+
+.. code-block:: text
+
+   [mysqld]
+   early-plugin-load="keyring_vault=keyring_vault.so"
+   keyring_vault_config="<PATH>/keyring_vault_n1.conf"
+
+Also ``keyring_vault_n1.conf`` file contents should be :
+
+.. code-block:: text
+
+   vault_url = http://127.0.0.1:8200
+   secret_mount_point = secret1
+   token = e0345eb4-35dd-3ddd-3b1e-e42bb9f2525d
+   vault_ca = /data/keyring_vault_confs/vault_ca.crt
+
+Detailed description of these options can be found in the `upstream documentation <https://www.percona.com/doc/percona-server/5.7/management/data_at_rest_encryption.html#keyring-vault-plugin>`_.
+
+Vault-server is an external server so make sure PXC node is able to reach to the said
+server.
+
+.. note:: |PXC| recommends to use same keyring_plugin on all the nodes of the
+   cluster. Mix-match is recommended to use it only while transitioning from
+   ``keyring_file`` -> ``keyring_vault`` or vice-versa.
+
+It is not necessary that all the nodes refer to same vault server. Whatever
+vault server is used, it should be accessible from the respective node. Also
+there is no restriction for all nodes to use the same mount point.
+
+If the node is not able to reach/connect to vault server, an error is notified
+during the server boot, and node refuses to start:
+
+.. code-block:: text
+
+   2018-05-29T03:54:33.859613Z 0 [Warning] Plugin keyring_vault reported: 'There is no vault_ca specified in keyring_vault's configuration file. Please make sure that Vault's CA certificate is trusted by the machine from which you intend to connect to Vault.'
+   2018-05-29T03:54:33.977145Z 0 [ERROR] Plugin keyring_vault reported: 'CURL returned this error code: 7 with error message : Failed to connect to 127.0.0.1 port 8200: Connection refused'
+
+If some nodes of the cluster are unable to connect to vault-server, this
+relates only to these specific nodes: e.g. if node-1 is able to connect, and
+node-2 is not, only node-2 will refuse to start. Also, if server has
+pre-existing encrypted object and on reboot server fails to connect to
+vault-server, the object is not accessible.
+
+In case when vault-server is accessible but authentication credential are wrong, 
+consequences are the same, and the corresponding error looks like following:
+
+.. code-block:: text
+
+   2018-05-29T03:58:54.461911Z 0 [Warning] Plugin keyring_vault reported: 'There is no vault_ca specified in keyring_vault's configuration file. Please make sure that Vault's CA certificate is trusted by the machine from which you intend to connect to Vault.'
+   2018-05-29T03:58:54.577477Z 0 [ERROR] Plugin keyring_vault reported: 'Could not retrieve list of keys from Vault. Vault has returned the following error(s): ["permission denied"]'
+
+In case of accessible vault-server with the wrong mount point, there is no
+error during server boot, but sitll node refuses to start:
+
+.. code-block:: text
+
+   mysql> CREATE TABLE t1 (c1 INT, PRIMARY KEY pk(c1)) ENCRYPTION='Y';
+   ERROR 3185 (HY000): Can't find master key from keyring, please check keyring plugin is loaded.
+
+   2018-05-29T04:01:33.774684Z 5 [ERROR] Plugin keyring_vault reported: 'Could not write key to Vault. Vault has returned the following error(s): ["no handler for route 'secret1/NDhfSU5OT0RCS2V5LTkzNzVmZWQ0LTVjZTQtMTFlOC05YTc3LTM0MDI4NmI4ODhiZS0xMF8='"]'
+   2018-05-29T04:01:33.774786Z 5 [ERROR] Plugin keyring_vault reported: 'Could not flush keys to keyring'
+
+Mix-match keyring plugins
+=========================
+
+With |xtrabackup| introducing transition-key logic it is now possible to
+mix-match keyring plugins. For example, user has node-1 configured to use
+``keyring_file`` plugin and node-2 configured to use ``keyring_vault``.
+
+.. note:: Percona recommends same configuration for all the nodes of the
+   cluster. Mix-match (in keyring plugins) is recommended only during
+   transition from one keying to other.
+
+Upgrade and compatibility issues
+--------------------------------
+
+|PXC| server before ``5.7.22`` only supported ``keyring_file`` and the
+dependent |xtrabackup| didn’t had concept of transition-key then. This makes
+mix-match of old |PXC| server (pre-5.7.21) using ``keyring_file`` with new
+|PXC| server (post-5.7.22) using ``keyring_vault`` not possible. User should
+first upgrade |PXC| server to version 5.7.22 or newer using ``keyring_file``
+plugin and then let it act as DONOR to new booting ``keyring_vault`` running
+JOINER.
+
+If all the nodes are using |PXC| 5.7.22, then user can freely
+configure some nodes to use ``keyring_file`` and other to use
+``keyring_vault``, but still this setup is not recommended and should be used
+during transitioning to vault only.
+
+If all the nodes are using |PXC| 5.7.21 and user would like to move to use
+``keyring_vault`` plugin, all the nodes should be upgraded to use |PXC| 5.7.22
+(that’s where vault plugin support was introduced in PXC). Once all nodes are
+configured to use |PXC| 5.7.22, user can switch one node at a time to use
+``vault-plugin``.
+
+.. note:: |MySQL| 5.7.21 has support for `migration between keystores <https://dev.mysql.com/doc/mysql-security-excerpt/5.7/en/keyring-key-migration.html>`_. Although a restart is required.
+
+Temporary file encryption
+=========================
+
+Percona Server 5.7.22 added support for encrypting temporary file storage
+enabled using ``encrypt-tmp-files``. This storage or files are local to the
+node and has no direct effect on |PXC| replication. |PXC| recommends enabling
+it on all the nodes of the cluster, though that is not mandatory. Parameter to
+enable this option is same as in Percona Server:
+
+.. code-block:: text
+
+   [mysqld]
+   encrypt-tmp-files=ON
+
+Migrating Keys Between Keyring Keystores
+========================================
+
+|PXC| supports key migration between keystores. The migration can be performed
+offline or online.
+
+Offline Migration
+-----------------
+
+In offline migration, the node to migrate is shutdown, and the migration server
+takes care of migrating keys for the said server to a new keystore.
+
+Following example illustrates this scenario:
+
+1. Let's say there are 3 |PXC| nodes n1, n2, n3 - all using ``keyring_file``, 
+   and n2 should be migrated to use ``keyring_vault``
+2. User shuts down n2 node.
+3. User start's Migration Server (``mysqld`` with a special option).
+4. Migration Server copies keys from n2 keyring file and adds them to the vault
+   server.
+5. User starts n2 node with the vault parameter, and keys should be available.
+
+Here is how the migration server output should look like:
+
+.. code-block:: text
+
+   /dev/shm/pxc57/bin/mysqld --defaults-file=/dev/shm/pxc57/copy_mig.cnf \
+   --keyring-migration-source=keyring_file.so \
+   --keyring_file_data=/dev/shm/pxc57/node2/keyring \
+   --keyring-migration-destination=keyring_vault.so \
+   --keyring_vault_config=/dev/shm/pxc57/vault/keyring_vault.cnf &
+
+   2018-05-30T03:44:11.803459Z 0 [Warning] TIMESTAMP with implicit DEFAULT value is deprecated. Please use
+   --explicit_defaults_for_timestamp server option (see documentation for more details).
+   2018-05-30T03:44:11.803534Z 0 [Note] --secure-file-priv is set to NULL. Operations related to importing and
+   exporting data are disabled
+   2018-05-30T03:44:11.803550Z 0 [Warning] WSREP: Node is not a cluster node. Disabling pxc_strict_mode
+   2018-05-30T03:44:11.803564Z 0 [Note] /dev/shm/pxc57/bin/mysqld (mysqld 5.7.21-21-29.26-debug) starting as process
+   5710 ...
+   2018-05-30T03:44:11.805917Z 0 [Warning] Can't create test file /dev/shm/pxc57/copy_mig/qaserver-06.lower-test
+   2018-05-30T03:44:11.805932Z 0 [Warning] Can't create test file /dev/shm/pxc57/copy_mig/qaserver-06.lower-test
+   2018-05-30T03:44:11.945989Z 0 [Note] Keyring migration successful.
+   2018-05-30T03:44:11.946015Z 0 [Note] Binlog end
+   2018-05-30T03:44:11.946047Z 0 [Note] Shutting down plugin 'keyring_vault'
+   2018-05-30T03:44:11.946166Z 0 [Note] Shutting down plugin 'keyring_file'
+   2018-05-30T03:44:11.947334Z 0 [Note] /dev/shm/pxc57/bin/mysqld: Shutdown complete
+
+On successful migration, destination keystore will get additional migrated keys
+(pre-existing keys in destination keystore are not touched or removed). Source
+keystore continues to retain the keys as migration performs copy operation and
+not move operation.
+
+If migration fails, then destination keystore will be left untouched.
+
+Online Migration
 ----------------
 
-.. variable:: keyring_vault_config
-
-  :cli: ``--keyring-vault-config``
-  :dyn: Yes
-  :scope: Global
-  :vartype: Text
-  :default:
-
-This variable is used to define the location of the
-:ref:`keyring_vault_plugin` configuration file.
-
-.. variable:: keyring_vault_timeout
-
-  :cli: ``--keyring-vault-timeout``
-  :dyn: Yes
-  :scope: Global
-  :vartype: Numeric
-  :default: ``15``
-
-This variable allows to set the duration in seconds for the Vault server
-connection timeout. Default value is ``15``. Allowed range is from ``1``
-second to ``86400`` seconds (24 hours). The timeout can be also completely
-disabled to wait infinite amount of time by setting this variable to ``0``.
-
-.. _data-at-rest-encryption.innodb-system-tablespace:
-
-
-
-InnoDB System Tablespace Encryption
-================================================================================
-
-:Availabiliity: This feature is **Experimental** quality
-
-The InnoDB system tablespace is encrypted by using master key encryption. The
-server must be started with the ``--bootstrap`` option.
-
-If the variable :variable:`innodb_sys_tablespace_encrypt` is set to ON and the
-server has been started in the bootstrap mode, you may create an encrypted table
-as follows:
-
-.. code-block:: guess
-
-   mysql> CREATE TABLE ... TABLESPACE=innodb_system ENCRYPTION='Y'
-
-.. note::
-
-   You cannot encrypt existing tables in the System tablespace.
-
-It is not possible to convert the system tablespace from encrypted to
-unencrypted or vice versa. A new instance should be created and user tables must
-be transferred to the desired instance.
-
-You can encrypt the already encrypted InnoDB system tablespace (key rotation)
-with a new master key by running the following ``ALTER INSTANCE`` statement:
-
-.. code-block:: guess
-
-   mysql> ALTER INSTANCE ROTATE INNODB MASTER KEY
-
-.. rubric:: Doublewrite Buffers
-
-The two types of doublewrite buffers used in |Percona Server| are encrypted
-differently.
-
-When the InnoDB system tablespace is encrypted, the ``doublewrite buffer`` pages
-are encrypted as well. The key which was used to encrypt the InnoDB system
-tablespace is also used to encrypt the doublewrite buffer.
-
-|Percona Server| encrypts the ``parallel doublewrite buffer`` with the respective
-tablespace keys. Only encrypted tablespace pages are written as encrypted in the
-parallel doublewrite buffer. Unencrypted tablespace pages will be written as
-unencrypted.
-
-.. important::
-
-   A server instance bootstrapped with the encrypted InnoDB system tablespace
-   cannot be downgraded. It is not possible to parse encrypted InnoDB system
-   tablespace pages in a version of |Percona Server| lower than the version
-   where the InnoDB system tablespace has been encrypted.
-
-
-System variables
---------------------------------------------------------------------------------
-
-.. variable:: innodb_sys_tablespace_encrypt
-
-   :cli: ``--innodb-sys-tablespace-encrypt``
-   :dyn: No
-   :scope: Global
-   :vartype: Boolean
-   :default: ``OFF``
-
-Enables the encryption of the InnoDB System tablespace. It is essential that the
-server is started with the ``--bootstrap`` option.
-
-.. seealso::
-
-   |MySQL| Documentation: ``--bootstrap`` option
-      https://dev.mysql.com/doc/refman/8.0/en/server-options.html#option_mysqld_bootstrap
-
-.. variable:: innodb_parallel_dblwr_encrypt
-
-   :cli: ``--innodb-parallel-dblwr-encrypt``
-   :dyn: Yes
-   :scope: Global
-   :vartype: Boolean
-   :default: ``OFF``
-
-Enables the encryption of the parallel doublewrite buffer. For encryption, uses
-the key of the tablespace where the parallel doublewrite buffer is used.
-
-
-.. _innodb_general_tablespace_encryption:
-
-InnoDB General Tablespace Encryption
-================================================================================
-
-In |Percona Server| :rn:`5.7.20-18` existing tablespace encryption support has
-been extended to handle general tablespaces. A general tablespace is either
-fully encrypted, covering all the tables inside, or not encrypted.
-It is not possible to have encrypted only some of the tables in a general
-tablespace.
-
-This feature extends the  `CREATE TABLESPACE
-<https://dev.mysql.com/doc/refman/8.0/en/create-tablespace.html>`_
-statement to accept the ``ENCRYPTION='Y/N'`` option.
-
-.. note::
-
-   Prior to |Percona Server| 8.0.13, the ``ENCRYPTION`` option was specific to
-   the ``CREATE TABLE`` or ``SHOW CREATE TABLE`` statement.  In |Percona Server|
-   8.0.13, this option becomes a tablespace attribute and is not allowed with
-   the ``CREATE TABLE`` or ``SHOW CREATE TABLE`` statement except for
-   file-per-table tablespaces.
-
-   .. variable:: default_table_encryption
-
-       :cli: ``default-table-encryption``
-       :dyn: Yes
-       :scope: Session
-       :vartype: Text
-       :default: OFF
-
-Defines the default encryption setting for general tablespaces. The variable allows you to create or alter tables without specifying the ENCRYPTION clause.
-
-.. seealso::
-
-    MySQL Documentation: default_table_encryption
-    https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html
-
-
-Usage
-================================================================================
-
-General tablespace encryption is enabled by the following syntax extension:
-
-.. code-block:: mysql
-
-   mysql> CREATE TABLESPACE tablespace_name ... ENCRYPTION='Y'
-
-Attempts to create or to move tables, including partitioned ones, to a general
-tablespace with an incompatible encryption setting are diagnosed and aborted.
-
-As you cannot move tables between encrypted and unencrypted tablespaces,
-you will need to create another table, add it to a specific tablespace and run
-``INSERT INTO SELECT`` from the table you want to move from, and then you will
-get encrypted or decrypted table with your desired content.
-
-Example
-================================================================================
-
-To create an encrypted tablespace run: :mysql:`CREATE TABLESPACE foo ADD DATAFILE 'foo.ibd' ENCRYPTION='Y';`
-
-To add an encrypted table to that table space run: :mysql:`CREATE TABLE t1 (a INT, b TEXT) TABLESPACE foo ENCRYPTION="Y";`
-
-Trying to add unencrypted table to this table space will result in an error:
-
-.. code-block:: mysql
-
-   mysql> CREATE TABLE t3 (a INT, b TEXT) TABLESPACE foo ENCRYPTION="N";
-   ERROR 1478 (HY000): InnoDB: Tablespace `foo` can contain only an ENCRYPTED tables.
-
-.. note::
-
-   |Percona XtraBackup| currently doesn't support backup of encrypted general
-   tablespaces.
-
-Verifying the Encryption Setting
-================================================================================
-
-If there is a general tablespace which doesn't include tables yet, sometimes
-user needs to find out whether it is encrypted or not (this task is easier for
-single tablespaces since you can check table info).
-
-A ``flag`` field in the ``INFORMATION_SCHEMA.INNODB_TABLESPACES`` has bit
-number 13 set if tablespace is encrypted. This bit can be ckecked with
-``flag & 8192`` expression in the following way:
-
-.. code-block:: mysql
-
-  SELECT space, name, flag, (flag & 8192) != 0 AS encrypted FROM INFORMATION_SCHEMA.INNODB_TABLESPACES WHERE name in ('foo', 'test/t2', 'bar', 'noencrypt');
-
-.. admonition:: Output
-
-   .. code-block:: guess
-
-      +-------+-----------+-------+-----------+
-      | space | name      | flag  | encrypted |
-      +-------+-----------+-------+-----------+
-      |    29 | foo       | 10240 |      8192 |
-      |    30 | test/t2   |  8225 |      8192 |
-      |    31 | bar       | 10240 |      8192 |
-      |    32 | noencrypt |  2048 |         0 |
-      +-------+-----------+-------+-----------+
-      4 rows in set (0.01 sec)
-
-System Variables
-----------------
-
-.. variable:: innodb_encrypt_tables
-
-  :cli: ``--innodb-encrypt-tables``
-  :removed: version 8.0.16-7
-  :dyn: Yes
-  :scope: Global
-  :vartype: Text
-  :default: ``OFF``
-
-The implementation of the behavior controlled by this variable is considered
-**Experimental** quality. This variable was removed in version 8.0.16-7.
-
-This variable was ported from MariaDB and then extended to support key rotation. This
-variable has the following possible values:
-
-.. rubric:: ON
-
-New tables are created encrypted. You can create an unencrypted table by using
-the ``ENCRYPTION=NO`` clause to the ``CREATE TABLE`` or ``ALTER TABLE``
-statement.
-
-.. rubric:: OFF
-
-By default, newly created tables are not encrypted. Add the ``ENCRYPTION=YES``
-clause in the ``CREATE TABLE`` or ``ALTER TABLE`` statement to create an
-encrypted table.
-
-.. rubric:: FORCE
-
-New tables are created encrypted with the master key. Passing ``ENCRYPTION=NO``
-to ``CREATE TABLE`` or ``ALTER TABLE`` will result in an error and the table
-will not be created or altered.
-
-If you alter a table which was created without encryption, note that it will not
-be encrypted unless you use the ``ENCRYPTION`` clause explicitly.
-
-.. rubric:: KEYRING_ON
-
-:Availability: This value is **Experimental** quality
-
-New tables are created encrypted with the keyring as the default encryption. You
-may specify a numeric key identifier and use a specific ``percona-innodb-`` key
-from the keyring instead of the default key:
-
-.. code-block:: guess
-
-   mysql> CREATE TABLE ... ENCRYPTION=’KEYRING’ ENCRYPTION_KEY_ID=NEW_ID
-
-**NEW_ID** is an unsigned 32-bit integer that refers to the numerical part of
-the ``percona_innodb-`` key.  When you assign a numerical identifer in the
-``ENCRYPTION_KEY_ID`` clause, the server uses the latest version of the
-corresponding key. For example, the clause ``ENCRYPTION_KEY_ID=2`` refers to the
-latest version of the ``percona_innodb-2`` key from the keyring.
-
-In case the ``percona-innodb-`` key with the requested ID does not exist in the
-keyring, |Percona Server| will create it with version 1. If a new
-``percona-innodb-`` key cannot be created with the requested ID, the whole
-``CREATE TABLE`` statement fails.
-
-
-
-.. rubric:: FORCE_KEYRING
-
-:Availability: This value is **Experimental** quality
-
-New tables are created encrypted and keyring encryption is enforced.
-
-.. rubric:: ONLINE_TO_KEYRING
-
-:Availability: This value is **Experimental** quality
-
-All tables created or altered without the ``ENCRYPTION=NO`` clause
-are encrypted with the latest version of the default encryption key. If a table
-being altered is already encrypted with the master key, the table is recreated
-encrypted with the latest version of the default encryption key.
-
-.. rubric:: ONLINE_TO_KEYRING_FORCE
-
-:Availability: This value is **Experimental** quality
-
-It is only possible to apply the keyring encryption when creating or altering
-tables.
-
-.. note::
-
-   The ``ALTER TABLE`` statement changes the current encryption mode only if you
-   use the ``ENCRYPTION`` clause.
-
-.. seealso::
-
-   |MariaDB| Documentation: ``innodb_encrypt_tables`` Option
-      https://mariadb.com/kb/en/library/xtradbinnodb-server-system-variables/#innodb_encrypt_tables
-
-      ..variable:: table_encryption_privilege_check
-
-        :cli: table-encryption-privilege-check
-        :implemented: version 8.0.16-7
-        :dyn: Yes
-        :scope: Global
-        :vartype: Boolean
-        :default: OFF
-
-      The variable is used when creating or altering a general tablespace or table with an encryption setting different than the :variable:`default_table_encryption`. The default value is `OFF`.
-
-.. seealso::
-
-  MySQL Documentation: ``table_encryption_privilege_check``
-  https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html
-
-.. variable:: innodb_encryption_threads
-
-   :cli: ``--innodb-encryption-threads``
-   :dyn: Yes
-   :scope: Global
-   :vartype: Numeric
-   :default: 0
-
-:Availability: This feature is of **Experimental** quality.
-
-This variable works in combination with the :variable:`default_table_encryption`
-variable set to ``ONLINE_TO_KEYRING``. This variable configures the number of
-threads for background encryption. For the online encryption to work, this
-variable must contain a value greater than **zero**.
-
-.. variable:: innodb_online_encryption_rotate_key_age
-
-   :cli: ``--innodb-online-encryption-rotate-key-age``
-   :dyn: Yes
-   :scope: Global
-   :vartype: Numeric
-   :default: 1
-
-By using this variable, you can re-encrypt the table encrypted using
-KEYRING. The value of this variable determines how frequently the encrypted
-tables should be encrypted again. If it is set to **1**, the encrypted table is
-re-encrypted on each key rotation. If it is set to **2**, the table is encrypted
-on every other key rotation.
-
-.. variable:: innodb_encrypt_online_alter_logs
-
-   :cli: ``--innodb-encrypt-online-alter-logs``
-   :dyn: Yes
-   :scope: Global
-   :vartype: Boolean
-   :default: OFF
-
-This variable simultaneously turns on the encryption of files used by InnoDB for
-full text search using parallel sorting, building indexes using merge sort, and
-online DDL logs created by InnoDB for online DDL. Encryption is available for file merges used in queries and backend processes.
-
-Binary log encryption
-=====================
-
-As described in the |MySQL| documentation, the encryption of binary and relay
-logs is triggered by the `binlog_encryption
-<https://dev.mysql.com/doc/refman/8.0/en/replication-options-binary-log.html#sysvar_binlog_encryption>`_
-variable.
-
-While replicating, master sends the stream of decrypted binary log events to a
-slave (SSL connections can be set up to encrypt them in transport). That said,
-masters and slaves use separate keyring storages and are free to use differing
-keyring plugins.
-
-Dumping of encrypted binary logs involves decryption, and can be done using
-``mysqlbinlog`` with ``--read-from-remote-server`` option.
-
-.. note:: Taking into account that ``--read-from-remote-server`` option  is only
-   relevant to binary logs, encrypted relay logs can not be dumped/decrypted
-   in this way.
-
-
-.. rubric:: Upgrading from |Percona Server| |changed-version| to any higher version
-
-.. include:: ../.res/text/encrypt_binlog.removing.txt
-
-.. |changed-version| replace:: 5.7.20-19
-
-System Variables
-----------------
-
-.. variable:: encrypt_binlog
-
-   :version-info: removed in :rn:`8.0.15-5`
-   :cli: ``--encrypt-binlog``
-   :dyn: No
-   :scope: Global
-   :vartype: Boolean
-   :default: ``OFF``
-
-The variable turns on binary and relay logs encryption.
-
-Redo Log Encryption
-==============================================================================
-
-Implemented in :rn:`8.0.16-7`, the supported values for :variable:`innodb_redo_log_encrypt` are the following:
-
-    * ON
-    * OFF
-    * master_key
-    * keyring_key
-
-.. note::
-
-  The keyring_key is **Experimental** for :rn:8.0.16-7.
-
-After starting the server, an attempt to encrypt the redo log fails in the following conditions:
-
-    * Server started with no keyring specified
-    * Server started with a keyring, but a different redo log encryption method is specified
-
-Undo Tablespace Encryption
-==============================================================================
-
-Implemented in :rn:`8.0.16-7`, the undo tablespace data encryption is enabled as a option. The undo data encryption must be enabled, the feature is disabled by default.
-
-This encryption is performed when the undo log data is written to disk using the tablespace encryption key. The undo log data is decrypted when read.
-
-.. seealso::
-
-   |MySQL| Documentation
-      https://dev.mysql.com/doc/refman/8.0/en/innodb-tablespace-encryption.html#innodb-tablespace-encryption-undo-log
-
-
-
-
-Temporary File Encryption
-================================================================================
-
-:Availability: This feature is of **Experimental** quality.
-
-The encryption of temporary files is triggered by the
-:variable:`encrypt-tmp-files` option.
-
-The `default_table_encryption` setting determines if a temporary table is encrypted. If the `innodb_temp_tablespace_encrypt`=OFF and the `default_table_encryption`=ON the temporary tables are encrypted. For the Innodb user-created temporary tables created in a temporary tablespace file use the `innodb_temp_tablespace_encrypt` variable.
-
-.. variable:: innodb_temp_tablespace_encrypt
-
-  :cli: ``--innodb-temp-tablespace-encrypt``
-  :dyn: Yes
-  :scope: Global
-  :vartype: Boolean
-  :default: ``Off``
-
-When this option is set to ``ON``, the server encrypts the global temporary
-tablespace (:file:`ibtmp*` files) and the session temporary tablespaces
-(:file:`#innodb_temp/temp_*.ibt` files). This option does not enforce the
-encryption of temporary tables which are currently open, and it does not rebuild
-the system temporary tablespace to encrypt data which are already written.
-
-The ``ENCRYPTION`` option is not allowed in the ``CREATE TEMPORARY TABLE``
-statement. The ``TABLESPACE`` option cannot be set to `innodb_temporary`. The
-global temporary tablespace datafile ``ibtmp1`` holds temporary table undo logs
-while intrinsic temporary tables and user temporary tables go to the encrypted
-session temporary tablespace.
-
-Since the global temporary tablespaces are created fresh at each server startup,
-it will not contain unencrypted data if this option is specified as a server
-argument.
-
-Setting :variable:`innodb_temp_tablespace_encrypt` to ``OFF`` with
-:variable:`default_table_encryption` set to ``OFF`` at runtime makes the server
-create new temporary tablespaces unencrypted. Existing encrypted user temporary and intrinsic
-temporary tables remain in encrypted session. Temporary tablespaces are only
-destroyed when the session is disconnected.
-
-When :variable:`innodb_temp_tablespace_encrypt` is ``OFF`` while
-:variable:`default_table_encryption` is ``ON`` at startup, the temporary tablespace
-datafile ``ibtmp1``, which only contains undo logs, is not encrypted. However,
-user-created and intrinsic temporary tables go to the encrypted session
-temporary tablespace.
-
-Setting the encryption to ``ON`` for the system tablespace generates an encryption key and encrypts the system temporary tablespace pages. Resetting the encryption to ``OFF``, all subsequent pages are written to the tablespace without encryption. The generated keys are not erased, to allow any encrypted tables to be decrypted.
-
-This feature is considered **Experimental** quality.
-
-.. important::
-
-   To use this option, a keyring plugin must be loaded, otherwise the server
-   produces an error message and refuses to create new temporary tables.
-
-.. seealso::
-
-   |MySQL| Documentation
-      https://dev.mysql.com/doc/refman/8.0/en/create-temporary-table.html
-
-Temporary files are currently used in |Percona Server| for the following
-purposes:
-
-* filesort (for example, ``SELECT`` statements with ``SQL_BIG_RESULT`` hints),
-* binary log transactional caches,
-* Group Replication caches.
-
-For each temporary file, an encryption key is generated locally, only kept
-in memory for the lifetime of the temporary file, and discarded afterwards.
-
-System Variables
-----------------
-
-.. variable:: encrypt-tmp-files
-
-  :cli: ``--encrypt-tmp-files``
-  :dyn: No
-  :scope: Global
-  :vartype: Boolean
-  :default: ``OFF``
-
-The option turns on encryption of temporary files created by |Percona Server|.
-
-
-
-.. _data-at-rest-encryption.data-scrubbing:
-
-Data Scrubbing
-================================================================================
-
-:Availability: This feature is **Experimental** quality
-
-While data encryption ensures that the existing data are not stored in plain
-form, the data scrubbing literally removes the data once the user decides they
-should be deleted. Compare this behavior with how the ``DELETE`` statement works
-which only marks the affected data as *deleted* - the space claimed by this data
-is overwritten with new data later.
-
-Once enabled, data scrubbing works automatically on each tablespace
-separately. To enable data scrubbing, you need to set the following variables:
-
-- :variable:`innodb-background-scrub-data-uncompressed`
-- :variable:`innodb-background-scrub-data-compressed`
-
-Uncompressed tables can also be scrubbed immediately, independently of key
-rotation or background threads. This can be enabled by setting the variable
-:variable:`innodb-immediate-scrub-data-uncompressed`. This option is not supported for
-compressed tables.
-
-Note that data scrubbing is made effective by setting the
-:variable:`innodb_online_encryption_threads` variable to a value greater than
-**zero**.
-
-System Variables
---------------------------------------------------------------------------------
-
-.. variable:: innodb_background_scrub_data_compressed
-
-   :cli: ``--innodb-background-scrub-data-compressed``
-   :dyn: Yes
-   :scope: Global
-   :vartype: Boolean
-   :default: ``OFF``
-
-.. variable:: innodb_background_scrub_data_uncompressed
-
-   :cli: ``--innodb-background-scrub-data-uncompressed``
-   :dyn: Yes
-   :scope: Global
-   :vartype: Boolean
-   :default: ``OFF``
-
-.. seealso::
-
-   Vault Documentation
-      https://www.vaultproject.io/docs/index.html
-   General-Purpose Keyring Key-Management Functions
-      https://dev.mysql.com/doc/refman/8.0/en/keyring-udfs-general-purpose.html
+In online migration, node to migrate is kept running and migration server takes
+care of migrating keys for the said server to a new keystore by connecting to
+the node.
+
+Following example illustrates this scenario:
+
+1. Let's say there are 3 |PXC| nodes n1, n2, n3 - all using ``keyring_file``, 
+   and n3 should be migrated to use ``keyring_vault``
+2. User start's Migration Server (``mysqld`` with a special option).
+3. Migration Server copies keys from n3 keyring file and adds them to the vault
+   server.
+4. User restarts n3 node with the vault parameter, and keys should be available.
+
+Here is how the migration server output should look like:
+
+.. code-block:: text
+
+   /dev/shm/pxc57/bin/mysqld --defaults-file=/dev/shm/pxc57/copy_mig.cnf \
+   --keyring-migration-source=keyring_vault.so \
+   --keyring_vault_config=/dev/shm/pxc57/keyring_vault3.cnf \
+   --keyring-migration-destination=keyring_file.so \
+   --keyring_file_data=/dev/shm/pxc57/node3/keyring \
+   --keyring-migration-host=localhost \
+   --keyring-migration-user=root \
+   --keyring-migration-port=16300 \
+   --keyring-migration-password='' &
+
+   2018-05-29T14:07:32.789673Z 0 [Warning] TIMESTAMP with implicit DEFAULT value is deprecated. Please use
+   --explicit_defaults_for_timestamp server option (see documentation for more details).
+   2018-05-29T14:07:32.789748Z 0 [Note] --secure-file-priv is set to NULL. Operations related to importing and
+   exporting data are disabled
+   2018-05-29T14:07:32.789766Z 0 [Warning] WSREP: Node is not a cluster node. Disabling pxc_strict_mode
+   2018-05-29T14:07:32.789780Z 0 [Note] /dev/shm/pxc57/bin/mysqld (mysqld 5.7.21-21-29.26-debug) starting as process
+   4936 ...
+   2018-05-29T14:07:32.792036Z 0 [Warning] Can't create test file /dev/shm/pxc57/copy_mig/qaserver-06.lower-test
+   2018-05-29T14:07:32.792052Z 0 [Warning] Can't create test file /dev/shm/pxc57/copy_mig/qaserver-06.lower-test
+   2018-05-29T14:07:32.927612Z 0 [Note] Keyring migration successful.
+   2018-05-29T14:07:32.927636Z 0 [Note] Binlog end
+   2018-05-29T14:07:32.927671Z 0 [Note] Shutting down plugin 'keyring_vault'
+   2018-05-29T14:07:32.927793Z 0 [Note] Shutting down plugin 'keyring_file'
+   2018-05-29T14:07:32.928864Z 0 [Note] /dev/shm/pxc57/bin/mysqld: Shutdown complete
+
+On successful migration, destination keystore will get additional migrated keys
+(pre-existing keys in destination keystore are not touched or removed). Source
+keystore continues to retain the keys as migration performs copy operation and
+not move operation. 
+
+If migration fails, then destination keystore will be left untouched.
+
+Migration server options
+------------------------
+
+* ``--keyring-migration-source``: The source keyring plugin that manages the
+  keys to be migrated.
+
+* ``--keyring-migration-destination``: The destination keyring plugin to which
+  the migrated keys are to be copied
+  
+  .. note:: For an offline migration, no additional key migration options are
+     needed. 
+
+* ``--keyring-migration-host``: The host where the running server is located.
+  This is always the local host.
+
+* ``--keyring-migration-user``, ``--keyring-migration-password``: The username
+  and password for the account to use to connect to the running server.
+
+* ``--keyring-migration-port``: For TCP/IP connections, the port number to
+  connect to on the running server.
+
+* ``--keyring-migration-socket``: For Unix socket file or Windows named pipe
+  connections, the socket file or named pipe to connect to on the running
+  server. 
+
+Prerequisite for migration:
+
+Make sure to pass required kerying options and other configuration parameters
+for the two keyring plugins. For example, if ``keyring_file`` is one of the
+plugins, you must set the :variable:`keyring_file_data` system variable if the
+keyring data file location is not the default location.
+
+Other non-keyring options may be required as well. One way to specify these
+options is by using ``--defaults-file`` to name an option file that contains
+the required options.
+
+.. code-block:: text
+
+   [mysqld]
+   basedir=/dev/shm/pxc57
+   datadir=/dev/shm/pxc57/copy_mig
+   log-error=/dev/shm/pxc57/logs/copy_mig.err
+   socket=/tmp/copy_mig.sock
+   port=16400
